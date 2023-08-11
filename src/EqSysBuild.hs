@@ -30,12 +30,12 @@ module EqSysBuild (
   BuildContext(..),
   AccStepInfo(..),
   EqSys(..),
-  SynComp(..),
   StdReq,
   x0Of,
   runConstruction,
   constructEqSysFromX0,
-  consBreathFsMode
+  consBreathFsMode,
+  SynComp(..)
 ) where
 import qualified Data.Map.Strict as M
 import qualified Data.HashTable.IO as HT
@@ -45,7 +45,7 @@ import Control.Monad.State.Strict (StateT, gets, modify, evalStateT)
 import Control.Monad.Reader (ReaderT (runReaderT), asks, MonadReader)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import qualified MData.LoopQueue as Q
-import Utils (setAdd, whenM, setHas, HashSet, whileM, mapToHashTable, Modifiable (..), (<<-), (|>), RevList (RevList), revToList)
+import Utils (setAdd, whenM, setHas, HashSet, whileM, mapToHashTable, Modifiable (..), (<<-), (|>), RevList (RevList), revToList, sndMap)
 import Control.Monad ( foldM, forM_, void, when)
 import Data.Maybe (fromMaybe)
 import Data.Hashable ( Hashable(hash) )
@@ -91,7 +91,7 @@ data BuildResult
 data BuildMode q g acc
   = BMDeepFirst
     { dfsPathSet :: HT.BasicHashTable (AbsVar q g) ()
-    , dfsVarStk :: Stack (AbsVar q g, [SynComp q g acc]) }
+    , dfsVarStk :: Stack (AbsVar q g, [InSynComp q g acc]) }
   | BMBreadthFirst
     { bfsQueue :: Queue (AbsVar q g) }
   | BMRetraverse (HT.BasicHashTable (AbsVar q g) ()) (Queue (AbsVar q g))
@@ -137,7 +137,7 @@ data Flags = Flags
   , recordAlsoFoundZeroVar :: Bool
   , printers :: Printers }
 
-data SynComp q g acc = SynComp acc [AbsVar q g]
+data InSynComp q g acc = InSynComp acc [AbsVar q g]
 
 data BuildContext q m g sp acc = BuildContext
   -- the rTSA stuff
@@ -151,8 +151,8 @@ data BuildContext q m g sp acc = BuildContext
   , cacheResults :: HT.BasicHashTable (AbsVar q g) BuildResult
   , vaccumTrips :: HT.BasicHashTable (AbsVar q g) ()
   , exploredCount :: IORef Integer
-  , results :: IORef [(AbsVar q g, [SynComp q g acc])]
-  , curEqRHS :: IORef [SynComp q g acc]
+  , results :: IORef [(AbsVar q g, [InSynComp q g acc])]
+  , curEqRHS :: IORef [InSynComp q g acc]
   -- require separate external information
   , buildMode :: BuildMode q g acc
   , flags :: Flags }
@@ -363,9 +363,9 @@ traverseAndBuild = do {
 recordUpdate :: [UpNodeVar q g] -> BuildState q m g sp acc ()
 recordUpdate upNodesVars = do
   acc <- gets accInfo
-  let newSynComp = SynComp acc $ fmap toAbsVar upNodesVars
+  let newInSynComp = InSynComp acc $ fmap toAbsVar upNodesVars
   rhsCell <- asks curEqRHS
-  liftIO $ modifyRef rhsCell (newSynComp:)
+  liftIO $ modifyRef rhsCell (newInSynComp:)
 
 
 dispatchUpwardCompute :: (Ord g, SpOp sp, StdReq q m g acc) =>
@@ -536,7 +536,7 @@ reTravBuildVar var explored todo = findCache var >>= \case
 
 
 saveAndRecoverCurRHS ::
-  Stack (AbsVar q g, [SynComp q g acc])
+  Stack (AbsVar q g, [InSynComp q g acc])
   -> ContT BuildResult (CtxState q m g sp acc) ()
 saveAndRecoverCurRHS envStk = shiftT $ \rest -> do {
   -- get the cell / pointer
@@ -562,7 +562,7 @@ saveAndRecoverCurRHS envStk = shiftT $ \rest -> do {
 dfsBuildVar :: (Ord g, SpOp sp, StdReq q m g acc) =>
   AbsVar q g
   -> HashSet (AbsVar q g)
-  -> Stack (AbsVar q g, [SynComp q g acc])
+  -> Stack (AbsVar q g, [InSynComp q g acc])
   -> CtxState q m g sp acc BuildResult
 dfsBuildVar var pathSet envStk = evalContT $ callCC $ \resultIn -> do
   -- if it is `Just`, return the cached value
@@ -801,12 +801,17 @@ defGetBuildContext rtsa = do
 x0Of :: RestrictedTreeStackAut q m g info sp -> AbsVar q g
 x0Of rtsa = AbsVar 1 [rtsaInitSt rtsa] GBot
 
-newtype EqSys q g acc = EqSys [(AbsVar q g, [SynComp q g acc])]
+newtype SynComp v acc = SynComp (acc, [v])
+
+newtype EqSys v acc = EqSys [(v, [SynComp v acc])]
+
+internalSynCompToSynComp :: InSynComp q g acc -> SynComp (AbsVar q g) acc
+internalSynCompToSynComp (InSynComp acc vars) = SynComp (acc, vars)
 
 runConstruction :: (SpOp sp, StdReq q m g acc) =>
   BuildContext q m g sp acc
   -> AbsVar q g
-  -> IO (EqSys q g acc)
+  -> IO (EqSys (AbsVar q g) acc)
 runConstruction ctx x0 = do
   either <- runExceptT $ runReaderT (entryBuildVarAndDependentVars x0) ctx
   case either of
@@ -820,11 +825,13 @@ runConstruction ctx x0 = do
       BRReTravelNormal -> getResult ctx
       BRReTravUnencountered -> error "Re-Travel Error: the Unencountered should not be for x0."
   where
-    getResult ctx = fmap EqSys $ readRef $ results ctx
+    getResult ctx = do
+      lst <- readRef $ results ctx
+      return $ EqSys $ fmap (sndMap $ fmap internalSynCompToSynComp) lst
 
 constructEqSysFromX0 :: (StdReq q m g acc, SpOp sp, Ord q) =>
   RestrictedTreeStackAut q m g acc sp
-  -> IO (EqSys q g acc)
+  -> IO (EqSys (AbsVar q g) acc)
 constructEqSysFromX0 rtsa = do
   ctx <- defGetBuildContext rtsa
   let x0 = x0Of rtsa
