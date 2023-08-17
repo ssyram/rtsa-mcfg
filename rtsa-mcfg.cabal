@@ -25,13 +25,16 @@ source-repository head
 
 library
   exposed-modules:
+      AutOp
+      DirectGrammarOp
       EqSysBuild
       EqSysBuild.ExpTerTime
       EqSysBuild.MultiCFG
       EqSysBuild.OmegaReg
       EqSysBuild.TerProb
-      Lib
-      MData.MStack
+      EqSysIter
+      EqSysSimp
+      GrammarToAut
       Objects
       Parser
       Utils
@@ -48,6 +51,7 @@ library
     , containers
     , hashable
     , hashtables
+    , logict
     , monad-st
     , mtl
     , mut-data
@@ -70,6 +74,7 @@ executable rtsa-mcfg-exe
     , containers
     , hashable
     , hashtables
+    , logict
     , monad-st
     , mtl
     , mut-data
@@ -94,6 +99,7 @@ test-suite rtsa-mcfg-test
     , containers
     , hashable
     , hashtables
+    , logict
     , monad-st
     , mtl
     , mut-data

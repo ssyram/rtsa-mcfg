@@ -31,6 +31,7 @@ dependencies:
 - containers
 - monad-st
 - transformers
+- logict
 - mut-data
 
 ghc-options:

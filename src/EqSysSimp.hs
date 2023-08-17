@@ -117,7 +117,6 @@ removeSimpleEmptyVars eqSys = runST $ do
   zvLst <- fmap fst <$> HT.toList zeroVars
   return (zvLst, ret)
 
-
 filterRHS :: (Eq v, Hashable v) =>
   HT.HashTable s v ()
   -> [SynComp v acc]

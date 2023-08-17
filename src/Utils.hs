@@ -10,7 +10,7 @@
 {-# LANGUAGE TupleSections #-}
 module Utils where
 import Data.List (intercalate)
-import Control.Monad.State (StateT, MonadTrans (lift), evalStateT, forM_)
+import Control.Monad.State (StateT, MonadTrans (lift), evalStateT, forM_, foldM)
 import Control.Monad.ST.Strict (ST)
 import Control.Monad.Reader (ReaderT (runReaderT), when)
 import qualified Data.HashTable.Class as HT
@@ -23,6 +23,7 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import Data.HashTable.IO (IOHashTable)
 import Control.Monad.Cont (MonadCont (callCC))
 import Control.Monad.Trans.Cont (evalContT)
+import Control.Monad.Logic (LogicT(LogicT))
 
 printLstContent :: Show a => [a] -> String
 printLstContent lst = intercalate ", " $ fmap show lst
@@ -194,3 +195,14 @@ anyM f lst = evalContT $ callCC $ \exit -> do
 
 allM :: (Monad f, Foldable t1) => (a -> f Bool) -> t1 a -> f Bool
 allM f lst = not <$> anyM (fmap not . f) lst
+
+-- | Switch the context of `ReaderT` by running the former
+rdDelimit :: (Monad m) => r -> ReaderT r m a -> ReaderT r' m a
+rdDelimit init ori = lift $ runReaderT ori init
+
+foldToLogicT :: (Monad m, Foldable t) => t a -> LogicT m a
+foldToLogicT lst = LogicT $ \cons nil -> do
+  nil <- nil
+  foldM (flip cons . return) nil lst
+
+newtype Flip f a b = Flip { getFlip :: f b a }

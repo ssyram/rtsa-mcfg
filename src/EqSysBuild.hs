@@ -35,11 +35,12 @@ module EqSysBuild (
   runConstruction,
   constructEqSysFromX0,
   consBreathFsMode,
-  SynComp(..)
+  SynComp(..),
+  SpOp(..)
 ) where
 import qualified Data.Map.Strict as M
 import qualified Data.HashTable.IO as HT
-import Objects (Operation (..), RestrictedTreeStackAut (rtsaRules, rtsaRestriction, rtsaDefLocMem, rtsaInitSt), SpTer, SpHorizontal (SpHor), Gamma (GBot, GNorm), isBot)
+import Objects (Operation (..), RestrictedTreeStackAut (rtsaRules, rtsaRestriction, rtsaDefLocMem, rtsaInitSt), SpTer, SpHorizontal (SpHor), Gamma (GBot, GNorm), isBot, SpUnit, ExtendedRTSA (eRtsaAutomaton, eRtsaDownMap, eRtsaKMap))
 import Control.Monad.Except (ExceptT, MonadError (catchError, throwError), MonadTrans (lift), runExceptT)
 import Control.Monad.State.Strict (StateT, gets, modify, evalStateT)
 import Control.Monad.Reader (ReaderT (runReaderT), asks, MonadReader)
@@ -63,6 +64,8 @@ type Stack = S.IODefStack
 
 
 -- This file defines an abstract general method to build the equation system for rTSA
+-- The main procedure of this program, using `IO`
+
 
 -- | The abstract variable, of information `length`, `D` and `gamma`
 data AbsVar q g = AbsVar Int [q] (Gamma g)
@@ -325,6 +328,10 @@ class SpOp sp where
   copeSp :: (StdReq q m g acc) => sp q m g -> BuildState q m g sp acc ()
 
 -- Some Standard Separate Special Operators
+
+instance SpOp SpUnit where
+  copeSp :: StdReq q m g acc => SpUnit q m g -> BuildState q m g SpUnit acc ()
+  copeSp _ = return ()
 
 instance SpOp SpTer where
   copeSp :: StdReq q m g acc => SpTer q m g -> BuildState q m g SpTer acc ()
@@ -767,16 +774,20 @@ consBreathFsMode = do
 
 - DFS Searching
 - Has `Up` Variables
-- 
 -}
 defGetBuildContext ::
   (StdReq q m g acc, Ord q) =>
-  RestrictedTreeStackAut q m g acc sp
+  ExtendedRTSA q m g acc sp
   -> IO (BuildContext q m g sp acc)
-defGetBuildContext rtsa = do
+defGetBuildContext eRtsa = do
+  let rtsa = eRtsaAutomaton eRtsa
   rules <- mapToHashTable $ rtsaRules rtsa
-  downMap <- mapToHashTable $ defGetDownMap rtsa
-  kMap <- mapToHashTable defKMap
+  downMap <- eRtsaDownMap eRtsa
+             |> fromMaybe (defGetDownMap rtsa)
+             |> mapToHashTable
+  kMap <- eRtsaKMap eRtsa
+          |> fromMaybe defKMap
+          |> mapToHashTable
   newCache <- HT.new
   newVacTrips <- HT.new
   counterCell <- newRef 0
@@ -829,10 +840,11 @@ runConstruction ctx x0 = do
       lst <- readRef $ results ctx
       return $ EqSys $ fmap (sndMap $ fmap internalSynCompToSynComp) lst
 
-constructEqSysFromX0 :: (StdReq q m g acc, SpOp sp, Ord q) =>
-  RestrictedTreeStackAut q m g acc sp
+constructEqSysFromX0 ::
+  (StdReq q m g acc, SpOp sp, Ord q) =>
+  ExtendedRTSA q m g acc sp
   -> IO (EqSys (AbsVar q g) acc)
 constructEqSysFromX0 rtsa = do
   ctx <- defGetBuildContext rtsa
-  let x0 = x0Of rtsa
+  let x0 = x0Of $ eRtsaAutomaton rtsa
   runConstruction ctx x0

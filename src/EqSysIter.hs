@@ -4,7 +4,7 @@
 module EqSysIter (iterEqSys) where
 import Utils (whenM, sndMap, whileM)
 import qualified Data.HashTable.ST.Basic as HT
-import Control.Monad (forM_, foldM, forM)
+import Control.Monad (forM_, forM)
 import Control.Monad.Trans.Cont (evalContT, callCC)
 import Control.Monad.ST.Class (MonadST(liftST, World))
 import EqSysBuild (EqSys(EqSys), SynComp (SynComp))
@@ -65,22 +65,15 @@ iterEqSys toStop (EqSys lst) = evalContT $ callCC $ \exit -> do
   -- impossible to be here, just for type-checking
   error "Impossible to come here."
 
-
 toResult :: (Eq k, Hashable k) =>
   HT.HashTable s k (v, v) -> ST s (HT.HashTable s k v)
 toResult resultMap = do
   lst <- HT.toList resultMap
   HT.fromList $ fmap (sndMap snd) lst
 
-
 computeRHS :: (Traversable t, Eq v, Hashable v, Num n) =>
-  HT.HashTable s v (n, n)
-  -> t (SynComp v n)
-  -> ST s n
-computeRHS resultMap rhs = do
-  lst <- forM rhs (computeSynComp resultMap)
-  liftST $ foldM (\x y -> return $ x + y) 0 lst
+  HT.HashTable s v (n, n) -> t (SynComp v n) -> ST s n
+computeRHS resultMap rhs = sum <$> forM rhs (computeSynComp resultMap)
   where
-    computeSynComp resultMap (SynComp (acc, vars)) = do
-      lst <- mapM (fmap (fst . fromJust) . HT.lookup resultMap) vars
-      foldM (\x y -> return $ x * y) acc lst
+    computeSynComp resultMap (SynComp (acc, vars)) =
+      foldl (*) acc <$> mapM (fmap (fst . fromJust) . HT.lookup resultMap) vars

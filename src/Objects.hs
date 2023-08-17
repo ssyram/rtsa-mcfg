@@ -18,6 +18,7 @@ import GHC.Generics (Generic)
 data Symbol t v
   = STerminal t
   | SVar v
+  deriving (Eq, Ord, Generic, Hashable)
 
 instance (Show t, Show v) => Show (Symbol t v) where
   show :: (Show t, Show v) => Symbol t v -> String
@@ -25,12 +26,14 @@ instance (Show t, Show v) => Show (Symbol t v) where
   show (SVar v) = show v
 
 newtype Term t v = Term [Symbol t v]
+  deriving (Eq, Ord, Generic, Hashable)
 
 instance (Show t, Show v) => Show (Term t v) where
   show :: (Show t, Show v) => Term t v -> String
   show (Term syms) = unwords $ fmap show syms
 
 newtype LocVarDecl nt v = LocVarDecl (nt, [v])
+  deriving (Eq, Ord, Generic, Hashable)
 
 instance (Show nt, Show v) => Show (LocVarDecl nt v) where
   show :: (Show nt, Show v) => LocVarDecl nt v -> String
@@ -43,6 +46,7 @@ instance (Show nt, Show v) => Show (LocVarDecl nt v) where
 data Rule nt t v = Rule
   { lhs :: [Term t v]
   , rhs :: [LocVarDecl nt v] }
+  deriving (Eq, Ord, Generic, Hashable)
 
 instance (Show nt, Show t, Show v) => Show (Rule nt t v) where
   show :: (Show nt, Show t, Show v) => Rule nt t v -> String
@@ -138,11 +142,19 @@ data RestrictedTreeStackAut q m g info sp = RestrictedTreeStackAut
   -- | the restriction number `k`
   , rtsaRestriction :: Int }
 
+-- | The rTSA extended with extra-analysis-information
+data ExtendedRTSA q m g info sp = ExtendedRTSA
+  { eRtsaAutomaton :: RestrictedTreeStackAut q m g info sp
+  , eRtsaKMap :: Maybe (M.Map g Int)
+  , eRtsaDownMap :: Maybe (M.Map (q, g) [q]) }
+
 -- Some Standard Separate Special Operators
 
 data SpTer q m g = SpTer STD_DER
 
 newtype SpHorizontal q m g = SpHor q STD_DER
+
+newtype SpUnit q m g = SpUnit () STD_DER
 
 -- | To change the `info` to appear in rTSA
 mapInfo :: (info -> info')
@@ -152,3 +164,14 @@ mapInfo f rtsa =
   rtsa {
     rtsaRules = M.map (fmap $ fstMap f) $ rtsaRules rtsa
   }
+
+-- mapAut ::
+--   (Monad f) =>
+--   (q -> f q')
+--   -> (m -> f m')
+--   -> (g -> f g')
+--   -> (info -> f info')
+--   -> (sp -> f sp')
+--   -> RestrictedTreeStackAut q m g info sp
+--   -> f (RestrictedTreeStackAut q' m' g' info' sp')
+-- mapAut qF mF gF infoF spF rtsa =
