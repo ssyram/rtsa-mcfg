@@ -102,8 +102,7 @@ They are expected to be handled by `removeRecurEmptyVar`.
 Returns all the found empty variables (non-repeating) and the refined equation system
 -}
 removeSimpleEmptyVars ::
-  (Eq v, Hashable v) =>
-  EqSys v acc -> ([v], EqSys v acc)
+  Hashable v => EqSys v acc -> ([v], EqSys v acc)
 removeSimpleEmptyVars eqSys = runST $ do
   zeroVars <- HT.new
 
@@ -117,14 +116,12 @@ removeSimpleEmptyVars eqSys = runST $ do
   zvLst <- fmap fst <$> HT.toList zeroVars
   return (zvLst, ret)
 
-filterRHS :: (Eq v, Hashable v) =>
-  HT.HashTable s v ()
+filterRHS :: Hashable v => HT.HashTable s v ()
   -> [SynComp v acc]
   -> ST s [SynComp v acc]
 filterRHS zeroVars = filterM $ hasEmptyVar zeroVars
   where
-    hasEmptyVar :: (Eq v, Hashable v) =>
-      HT.HashTable s v () -> SynComp v acc -> ST s Bool
+    hasEmptyVar :: Hashable v => HT.HashTable s v () -> SynComp v acc -> ST s Bool
     hasEmptyVar zeroVars (SynComp (_, lst)) =
       anyM (fmap isJust . HT.lookup zeroVars) lst
 
@@ -138,8 +135,7 @@ For example:
 In this case, the `removeSimpleEmptyVars` is not going to work because it just erases 
 the direct stuff.
 -}
-removeRecurEmptyVar :: (Eq v, Hashable v) =>
-  EqSys v acc -> ([v], EqSys v acc)
+removeRecurEmptyVar :: Hashable v =>EqSys v acc -> ([v], EqSys v acc)
 removeRecurEmptyVar (EqSys oriLst) =
   fmap (sndMap $ fmap $ \(SynComp (_, vars)) -> SynComp (1 :: Int, vars)) oriLst
   |> EqSys
@@ -163,8 +159,7 @@ reachedTargetRound cRound targetRound _ = do
 -- | Combines `removeSimpleEmptyVars` and `removeRecurEmptyVars`
 --   Guaranteed to erase all the empty variables
 --   Returns the non-duplicating list of found empty variables and the refined EqSys
-removeEmptyVars :: (Eq v, Hashable v) =>
-  EqSys v acc -> ([v], EqSys v acc)
+removeEmptyVars :: (Hashable v) =>EqSys v acc -> ([v], EqSys v acc)
 removeEmptyVars eqSys =
   let (emptyVars, newEqSys) = removeSimpleEmptyVars eqSys
       (moreEmptyVars, retEqSys) = removeRecurEmptyVar newEqSys
@@ -195,7 +190,7 @@ isConst = List.all isConst
     isConst (SynComp (_, [])) = True
     isConst (SynComp (_, _l)) = False
 
-logConstVars :: (Monoid acc, Eq v, Hashable v) =>
+logConstVars :: (Monoid acc, Hashable v) =>
   HT.HashTable s v acc
   -> [(v, [SynComp v acc])] -> ST s ()
 logConstVars constMap lst = forM_ lst $ \(v, constRHS) ->
@@ -203,7 +198,7 @@ logConstVars constMap lst = forM_ lst $ \(v, constRHS) ->
   |> foldl (<>) mempty  -- MUST BE `foldl` NOT `foldr`
   |> HT.insert constMap v
 
-modifyRHS :: (Monoid acc, Eq v, Hashable v) =>
+modifyRHS :: (Monoid acc, Hashable v) =>
   HT.HashTable s v acc
   -> [SynComp v acc]
   -> ST s [SynComp v acc]

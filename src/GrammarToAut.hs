@@ -8,14 +8,14 @@
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# OPTIONS_GHC -Wno-unused-do-bind #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Redundant return" #-}
+{-# OPTIONS_GHC -Wno-deriving-defaults #-}
 module GrammarToAut (
   State(..),
   LocMem(..),
   StackSym(..),
   mcfgToRtsa
 ) where
-import Objects (MultiCtxFreeGrammar (mcfgRules, startNonTer), Rule (..), RestrictedTreeStackAut (RestrictedTreeStackAut), SpUnit, Operation (OpDown, OpUp), LocVarDecl (LocVarDecl), Symbol (..), Term (..), ExtendedRTSA (ExtendedRTSA), Gamma (..))
+import Objects (MultiCtxFreeGrammar (mcfgRules, mcfgStartNonTer), Rule (..), RestrictedTreeStackAut (RestrictedTreeStackAut), SpUnit, Operation (OpDown, OpUp), LocVarDecl (LocVarDecl), Symbol (..), Term (..), ExtendedRTSA (ExtendedRTSA), Gamma (..))
 import Control.Monad.Reader (forM, forM_)
 import Control.Monad.Except (MonadIO (liftIO))
 import Data.Hashable ( Hashable )
@@ -28,6 +28,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.List as List
 import qualified Data.Map.Merge.Strict as M
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as S
 
 type HashTable k v = HT.BasicHashTable k v
 
@@ -62,7 +63,7 @@ The procedure of conversion then is given by:
 - Generate the whole information.
 -}
 mcfgToRtsa ::
-  (Hashable nt, Hashable v, Ord nt, Ord t, Ord v) =>
+  (Hashable nt, Ord nt, Ord t, Ord v) =>
   MultiCtxFreeGrammar nt t v
   -> IO (ExtendedRTSA (State nt) (LocMem nt t v) (StackSym nt) [t] SpUnit)
 mcfgToRtsa mcfg = do
@@ -73,11 +74,12 @@ mcfgToRtsa mcfg = do
             |> (initRules mcfg ++)
             |> fmap (sndMap (:[]))
             |> M.fromListWith (++)
+            |> M.map S.fromList
       kMap = getKMap mcfg $ M.fromList $ fmap (sndMap fst) rulesWithDimAmounts
       k = M.toList kMap
           |> fmap snd
           |> foldl max 0
-  downMap <- hashTableToMap downMap
+  downMap <- M.map S.fromList <$> hashTableToMap downMap
   let rtsa = RestrictedTreeStackAut map (StDim 0) LMNew k
   return $ ExtendedRTSA rtsa (Just kMap) (Just downMap)
 
@@ -85,7 +87,7 @@ initRules ::
   MultiCtxFreeGrammar nt t v
   -> [((State nt, LocMem nt t v, Gamma (StackSym nt)), ([t], Op nt t v))]
 initRules mcfg =
-  let startNt = startNonTer mcfg
+  let startNt = mcfgStartNonTer mcfg
       stDown = StDown (StackSym (startNt, 0), 0)
   in
   [ ((StDim 0, LMNew, GBot), ([], OpUp   (StDim 0) LMNew (StackSym (startNt, 0))))
@@ -119,8 +121,9 @@ prepareConvRules mcfg =
   |> M.merge onlyRules onlyDim combine (mcfgRules mcfg)
   |> M.toList
   where
+    -- DEBUG: when only rules but not RHS, still regard as having `1` NOT `0`.
     onlyRules :: M.SimpleWhenMissing k x (Int, x)
-    onlyRules = M.mapMaybeMissing $ \_ rules -> return (0, rules)
+    onlyRules = M.mapMaybeMissing $ \_ rules -> return (1, rules)
     onlyDim :: M.SimpleWhenMissing k y (y, [x])
     onlyDim   = M.mapMaybeMissing $ \_ dim   -> return (dim, [])
     combine :: M.SimpleWhenMatched k y x (x, y)
@@ -156,8 +159,7 @@ So, for the dimension `n` of `Rule` of `NT` with index `i`, the translation is g
 So the procedure goes by traversing `tn`, during the stuff, at each step, modify the environment.
 -}
 convertRules ::
-  (Eq nt, Hashable nt, Hashable v, Eq v) =>
-  HashTable (State nt, StackSym nt) [State nt]
+  (Hashable nt) =>HashTable (State nt, StackSym nt) [State nt]
   -> [(nt, (Int, [Rule nt t v]))]
   -> IO [((State nt, LocMem nt t v, StackSym nt), ([t], Op nt t v))]
 convertRules downMap lst = L.observeAllT $ do
@@ -165,9 +167,6 @@ convertRules downMap lst = L.observeAllT $ do
   oriRule <- foldToLogicT rules
   -- modify the rules
   rule@(Rule terms rhs) <- liftIO $ retagRHS oriRule
-  -- set up the variable map for this rule
-  vMap <- liftIO (HT.new :: IO (HashTable k v))
-  liftIO $ initVMap vMap rhs
 
   -- intialise analysis environment
   ntIdx <- foldToLogicT [0..ntIdxAmount - 1]
@@ -191,16 +190,15 @@ convertRules downMap lst = L.observeAllT $ do
   -- traverse each element
   liftIO $ forM_ term $ \case
     STerminal t -> modifyRef curRevInfo $ \(RevList l) -> RevList (t:l)
-    SVar v -> HT.lookup vMap v >>= \case
-      Nothing -> error "INTERNAL IMPOSSIBLE."
-      Just (stkSym, upDim) -> do
-        -- (StDim j, LMRule Rule, up NT-k)
-        addRule $ OpUp (StDim upDim) nextM stkSym
-        -- clear `info`
-        curRevInfo <<- RevList []
-        -- update `status`
-        -- (StDown NT-k, LMRule Rule, NT-i)
-        curStatus <<- (StDown (stkSym, upDim), nextM, curGamma)
+    SVar (ntIdx, upDim) -> do
+      let LocVarDecl (stkSym, _) = rhs !! ntIdx
+      -- (StDim j, LMRule Rule, up NT-k)
+      addRule $ OpUp (StDim upDim) nextM stkSym
+      -- clear `info`
+      curRevInfo <<- RevList []
+      -- update `status`
+      -- (StDown NT-k, LMRule Rule, NT-i)
+      curStatus <<- (StDown (stkSym, upDim), nextM, curGamma)
 
   -- finally, add the `down` operation
   let endSt = StDown (StackSym (nt, ntIdx), termIdx)
@@ -217,7 +215,7 @@ convertRules downMap lst = L.observeAllT $ do
   foldToLogicT lst
 
 
-retagRHS :: (Eq nt, Hashable nt) => Rule nt t v -> IO (Rule (StackSym nt) t v)
+retagRHS :: (Hashable nt) =>Rule nt t v -> IO (Rule (StackSym nt) t v)
 retagRHS (Rule terms rhs) = do
   ntIdxMap <- HT.new :: IO (HashTable k v)
   rhs <- forM rhs $ \(LocVarDecl (nt, vars)) -> do
@@ -226,17 +224,4 @@ retagRHS (Rule terms rhs) = do
        Just idx -> (Just $ idx + 1, idx)
     return $ LocVarDecl (StackSym (nt, nextIdx), vars)
   return $ Rule terms rhs
-
-
-initVMap ::
-  (Eq v, Hashable v) =>
-  HashTable v (StackSym nt, Int)
-  -> [LocVarDecl (StackSym nt) v]
-  -> IO ()
-initVMap vMap rhs =
-  forM_ rhs $ \(LocVarDecl (nt, vars)) ->
-    forM_ (zip [0..] vars) $ \(d, v) -> do
-      HT.mutate vMap v $ \case
-         Nothing -> (Just (nt, d), ())
-         Just ev -> (Just ev, ())
 

@@ -8,6 +8,9 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Utils where
 import Data.List (intercalate)
 import Control.Monad.State (StateT, MonadTrans (lift), evalStateT, forM_, foldM)
@@ -24,13 +27,18 @@ import Data.HashTable.IO (IOHashTable)
 import Control.Monad.Cont (MonadCont (callCC))
 import Control.Monad.Trans.Cont (evalContT)
 import Control.Monad.Logic (LogicT(LogicT))
+import qualified Data.List as List
+import qualified Data.Set as S
+import GHC.Generics (Generic)
+import qualified Data.HashTable.ST.Basic as HTST
+import Control.Monad.Trans.Maybe (MaybeT(MaybeT))
 
 printLstContent :: Show a => [a] -> String
 printLstContent lst = intercalate ", " $ fmap show lst
 
 quoteBy :: String -> String -> String
 quoteBy q str =
-  let (qs, qe) = splitAt (length q `div` 2) str in
+  let (qs, qe) = splitAt (length q `div` 2) q in
   qs ++ str ++ qe
 
 (|>) :: t1 -> (t1 -> t2) -> t2
@@ -76,11 +84,11 @@ hashTableToMap tab = do
 
 type HashSet k = HTO.BasicHashTable k ()
 
-setHas :: (Eq k, Hashable k) => HashSet k -> k -> IO Bool
+setHas :: (Hashable k) =>HashSet k -> k -> IO Bool
 setHas set key = isJust <$> HTO.lookup set key
 
 -- | Returns whether the key is already presented
-setAdd :: (Eq k, Hashable k) => HashSet k -> k -> IO Bool
+setAdd :: (Hashable k) =>HashSet k -> k -> IO Bool
 setAdd set key = HTO.mutate set key $ \case
    Nothing -> (Just (), True)
    Just _  -> (Just (), False)
@@ -107,7 +115,7 @@ whileM mb body = do
   b <- mb
   when b $ do body; whileM mb body
 
-mapToHashTable :: (HT.HashTable h, Eq k, Hashable k) => M.Map k v -> IO (HTO.IOHashTable h k v)
+mapToHashTable :: (HT.HashTable h, Hashable k) => M.Map k v -> IO (HTO.IOHashTable h k v)
 mapToHashTable map = HTO.fromList $ M.toList map
 
 class (Monad m) => Modifiable m r | m -> r where
@@ -147,6 +155,7 @@ instance Modifiable (ST s) (STRef s) where
 
 -- | The mark type for reversed list
 newtype RevList a = RevList [a]
+  deriving (Eq, Ord, Show, Generic, Hashable)
 
 instance Semigroup (RevList a) where
   (<>) :: RevList a -> RevList a -> RevList a
@@ -168,6 +177,16 @@ class IMap m where
   insert :: m -> Key m -> Val m -> m
   containsKey :: m -> Key m -> Bool
   tryFind :: m -> Key m -> Maybe (Val m)
+
+instance Ord k => IMap (M.Map k v) where
+  type Key (M.Map k v) = k
+  type Val (M.Map k v) = v
+  insert :: M.Map k v -> Key (M.Map k v) -> Val (M.Map k v) -> M.Map k v
+  insert m k v = M.insert k v m
+  containsKey :: M.Map k v -> Key (M.Map k v) -> Bool
+  containsKey m k = isJust $ M.lookup k m
+  tryFind :: M.Map k v -> Key (M.Map k v) -> Maybe (Val (M.Map k v))
+  tryFind m k = M.lookup k m
 
 fstMap :: (t -> a) -> (t, b) -> (a, b)
 fstMap f (a, b) = (f a, b)
@@ -205,4 +224,124 @@ foldToLogicT lst = LogicT $ \cons nil -> do
   nil <- nil
   foldM (flip cons . return) nil lst
 
+toLogicT :: (Monad m, Foldable t) => t a -> LogicT m a
+toLogicT = foldToLogicT
+
 newtype Flip f a b = Flip { getFlip :: f b a }
+
+class Collection t a | t -> a where
+  empty :: t
+  addOne :: t -> a -> t
+  removeOne :: Eq a => t -> a -> t
+  addAll :: Foldable f => t -> f a -> t
+  addAll = foldl addOne
+  removeAll :: (Foldable f, Eq a) => t -> f a -> t
+  removeAll = foldl removeOne
+  cFoldl :: (b -> a -> b) -> b -> t -> b
+  ofList :: [a] -> t
+  ofList = addAll empty
+  toList :: t -> [a]
+
+instance Collection [a] a where
+  empty :: [a]
+  empty = []
+  addOne :: [a] -> a -> [a]
+  addOne = flip (:)
+  removeOne :: Eq a => [a] -> a -> [a]
+  removeOne = flip List.delete
+  cFoldl :: (b -> a -> b) -> b -> [a] -> b
+  cFoldl = foldl
+  toList :: [a] -> [a]
+  toList = id
+
+instance (Ord a) => Collection (S.Set a) a where
+  empty = S.empty
+  addOne = flip S.insert
+  removeOne = flip S.delete
+  cFoldl = S.foldl
+  toList = S.toList
+
+instance (Ord k) => Collection (M.Map k v) (k, v) where
+  empty = M.empty
+  addOne m (k, v) = M.insert k v m
+  removeOne m (k, _) = M.delete k m
+  cFoldl f = M.foldlWithKey $ \b k v -> f b (k, v)
+  toList = M.toList
+
+toColMap :: (Foldable f, Collection t v, Ord k) => f (k, v) -> M.Map k t
+toColMap = foldl foldFunc M.empty
+  where
+    adder v = \case
+      Just l  -> Just $ addOne l v
+      Nothing -> Just $ addOne empty v
+    foldFunc m (k, v) = M.alter (adder v) k m
+
+class ToString t where toString :: t -> String
+
+-- | An auxiliary string type for better printing look -- non-quote
+newtype NString = NString String
+  deriving (Eq, Ord, Generic, Hashable)
+
+instance Show NString where
+  show :: NString -> String
+  show (NString s) = s
+
+addIndent :: Int -> String -> String -> String
+addIndent n indentStr inputStr =
+  unlines $ fmap (concat (replicate n indentStr) ++) (lines inputStr)
+
+printListMap :: (t -> a -> String) -> M.Map t [a] -> String
+printListMap print map =
+  M.toList map
+  |> fmap (uncurry $ fmap . print)  -- (\(nt, rules) -> print nt <$> rules)
+  |> concat
+  |> intercalate "\n"
+
+-- | Generate a function that returns an auto-increasing function
+--   It recalls the time an object is called (this function is applied to)
+stAutoCallCount :: (Hashable k, Enum a) =>ST s (k -> ST s a)
+stAutoCallCount = do
+  tab <- HTST.new
+  return $ \o ->
+    HTST.mutate tab o $ \case
+      Nothing -> (Just $ toEnum 1, toEnum 0)
+      Just id -> (Just $ succ id, id)
+
+-- | The `IO` monad version of `stAutoCallCount`
+ioAutoCallCount :: (Hashable k, Enum a) =>IO (k -> IO a)
+ioAutoCallCount = do
+  tab <- HTO.new :: IO (HTO.BasicHashTable k v)
+  return $ \o ->
+    HTO.mutate tab o $ \case
+      Nothing -> (Just $ toEnum 1, toEnum 0)
+      Just id -> (Just $ succ id, id)
+
+-- | Returns an `ST` monad auto numbering function that can give a unique number to the input
+--   For a given fixed input, the number is the same
+stAutoNumber :: (Num a, Hashable k) => ST s (k -> ST s a)
+stAutoNumber = do
+  cell <- newRef 0
+  tab <- HTST.new
+  return $ \o ->
+    HTST.mutateST tab o $ \case
+      Just id -> return (Just id, id)
+      Nothing -> do
+        nextId <- readRef cell
+        cell <<- nextId + 1
+        return (Just nextId, nextId)
+
+ioAutoNumber :: (Num a, Hashable k) => IO (k -> IO a)
+ioAutoNumber = do
+  cell <- newRef 0
+  tab <- HTO.new :: IO (HTO.BasicHashTable k v)
+  return $ \o ->
+    HTO.mutateIO tab o $ \case
+      Just id -> return (Just id, id)
+      Nothing -> do
+        nextId <- readRef cell
+        cell <<- nextId + 1
+        return (Just nextId, nextId)
+
+-- | Make the `Maybe` type become a transformer within a monad
+transMaybe :: Monad m => Maybe a -> MaybeT m a
+transMaybe m = MaybeT $ return m

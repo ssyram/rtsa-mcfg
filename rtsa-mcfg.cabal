@@ -34,6 +34,7 @@ library
       EqSysBuild.TerProb
       EqSysIter
       EqSysSimp
+      Examples
       GrammarToAut
       Objects
       Parser
@@ -53,6 +54,7 @@ library
     , hashtables
     , logict
     , monad-st
+    , mono-traversable
     , mtl
     , mut-data
     , parsec
@@ -76,6 +78,7 @@ executable rtsa-mcfg-exe
     , hashtables
     , logict
     , monad-st
+    , mono-traversable
     , mtl
     , mut-data
     , parsec
@@ -101,6 +104,7 @@ test-suite rtsa-mcfg-test
     , hashtables
     , logict
     , monad-st
+    , mono-traversable
     , mtl
     , mut-data
     , parsec

@@ -23,8 +23,6 @@ module EqSysBuild (
   defKMap,
   defFlags,
   Flags(..),
-  defPrinters,
-  Printers(..),
   AbsVar(..),
   BuildMode,
   BuildContext(..),
@@ -43,8 +41,8 @@ import qualified Data.HashTable.IO as HT
 import Objects (Operation (..), RestrictedTreeStackAut (rtsaRules, rtsaRestriction, rtsaDefLocMem, rtsaInitSt), SpTer, SpHorizontal (SpHor), Gamma (GBot, GNorm), isBot, SpUnit, ExtendedRTSA (eRtsaAutomaton, eRtsaDownMap, eRtsaKMap))
 import Control.Monad.Except (ExceptT, MonadError (catchError, throwError), MonadTrans (lift), runExceptT)
 import Control.Monad.State.Strict (StateT, gets, modify, evalStateT)
-import Control.Monad.Reader (ReaderT (runReaderT), asks, MonadReader)
-import Control.Monad.IO.Class (liftIO, MonadIO)
+import Control.Monad.Reader (ReaderT (runReaderT), asks)
+import Control.Monad.IO.Class (liftIO)
 import qualified MData.LoopQueue as Q
 import Utils (setAdd, whenM, setHas, HashSet, whileM, mapToHashTable, Modifiable (..), (<<-), (|>), RevList (RevList), revToList, sndMap)
 import Control.Monad ( foldM, forM_, void, when)
@@ -56,8 +54,6 @@ import Control.Monad.Trans.Cont ( ContT, evalContT, shiftT )
 import Data.IORef (IORef)
 import qualified MData.Stack as S
 import qualified Data.Set as Set
-import Prelude hiding (print)
-import qualified Prelude
 
 type Queue = Q.IOLoopQueue
 type Stack = S.IODefStack
@@ -120,25 +116,11 @@ data BuildExcept q g
   | EMessage String
   deriving (Show)
 
-type Printer = forall a.Show a => a -> IO ()
-
-data Printers = Printers
-  { usualPrinter :: Printer
-  , debugPrinter :: Printer
-  , innerDebugPrinter :: Printer }
-
-print :: (MonadReader (BuildContext q m g sp acc) io, MonadIO io, Show t) =>
-  (Printers -> t -> IO b) -> t -> io b
-print printer str = do
-  printFunc <- asks $ printer . printers . flags
-  liftIO $ printFunc str
-
 data Flags = Flags
   { reportStuck :: Bool
   , noUpVar :: Bool
   , reportUnencountered :: Bool
-  , recordAlsoFoundZeroVar :: Bool
-  , printers :: Printers }
+  , recordAlsoFoundZeroVar :: Bool }
 
 data InSynComp q g acc = InSynComp acc [AbsVar q g]
 
@@ -200,6 +182,18 @@ type CtxState q m g sp acc =
 -- | Shorthand for various STandarD constraints REQuirements the status `q`, `m` and `g` and `acc`
 --   should satisfy when appear in the constraints
 class (Eq q
+      , Ord g
+      , Hashable q
+      , Eq m
+      , Hashable m
+      , Hashable g
+      , Show q
+      , Show m
+      , Show g
+      , AccStepInfo acc g) =>
+  StdReq q m g acc
+
+instance (Eq q
       , Ord g
       , Hashable q
       , Eq m
@@ -318,7 +312,7 @@ remapRevUpMap g newVal =
 logAndAddDepth :: BuildState q m g sp acc ()
 logAndAddDepth = do
   depth <- gets curDepth
-  print debugPrinter (BMsgDepth depth :: BuildMessage Int Int Int)
+  liftIO $ print (BMsgDepth depth :: BuildMessage Int Int Int)
   modify $ \info -> info { curDepth = depth + 1 }
 
 updateAccInfo :: (StdReq q m g acc) => acc -> BuildState q m g sp acc ()
@@ -354,7 +348,7 @@ traverseAndBuild = do {
   rules <- liftIO $ fromMaybe [] <$> HT.lookup rulesMap status;
   -- Report Stuck if required
   whenM (asks ((null rules &&) . reportStuck . flags)) $
-    print debugPrinter $ BMsgStuckStat status;
+    liftIO $ print $ BMsgStuckStat status;
   -- Traverse for each rule
   forM_ rules $ \(stepInfo, op) -> do {
     logAndAddDepth;
@@ -538,7 +532,7 @@ reTravBuildVar var explored todo = findCache var >>= \case
       So, just return a placeholder and no need to explore this variable.
     -}
     whenM (asks $ reportUnencountered . flags) $
-      print usualPrinter $ (BMsgUnencountered :: AbsVar q g -> BuildMessage q Int g) var
+      liftIO $ print $ (BMsgUnencountered :: AbsVar q g -> BuildMessage q Int g) var
     return BRReTravUnencountered
 
 
@@ -637,8 +631,8 @@ logNewVar :: (Show q, Show g) => AbsVar q g -> CtxState q m g sp acc ()
 logNewVar var = do
   countCell <- asks exploredCount
   varAmount <- liftIO $ readRef countCell
-  print usualPrinter $ (BMsgNewVar :: AbsVar q g -> BuildMessage q Int g) var
-  print usualPrinter (BMsgExploredVarAmount $ fromInteger varAmount :: BuildMessage Int Int Int)
+  liftIO $ print $ (BMsgNewVar :: AbsVar q g -> BuildMessage q Int g) var
+  liftIO $ print (BMsgExploredVarAmount $ fromInteger varAmount :: BuildMessage Int Int Int)
   liftIO $ modifyRef countCell (+1)
 
 
@@ -706,21 +700,13 @@ entryBuildVarAndDependentVars var = asks buildMode >>= \case
   BMBreadthFirst todo        -> initBfsBuildVar var todo
   BMRetraverse explored todo -> initReTravBuildVar var explored todo
 
--- The default printer settings for printers
-defPrinters :: Printers
-defPrinters = Printers
-  { usualPrinter = Prelude.print
-  , debugPrinter = Prelude.print
-  , innerDebugPrinter = Prelude.print }
-
 -- The default setting for `Flags`
 defFlags :: Flags
 defFlags = Flags
   { reportStuck = False
   , noUpVar = False
   , reportUnencountered = False
-  , recordAlsoFoundZeroVar = True
-  , printers = defPrinters }
+  , recordAlsoFoundZeroVar = True }
 
 -- The default empty `kMap`
 defKMap :: M.Map g Int
@@ -781,8 +767,9 @@ defGetBuildContext ::
   -> IO (BuildContext q m g sp acc)
 defGetBuildContext eRtsa = do
   let rtsa = eRtsaAutomaton eRtsa
-  rules <- mapToHashTable $ rtsaRules rtsa
+  rules <- mapToHashTable $ M.map Set.toList $ rtsaRules rtsa
   downMap <- eRtsaDownMap eRtsa
+             |> fmap (M.map Set.toList)
              |> fromMaybe (defGetDownMap rtsa)
              |> mapToHashTable
   kMap <- eRtsaKMap eRtsa

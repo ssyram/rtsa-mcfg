@@ -39,7 +39,7 @@ So the meaning of the stopping criteria is:
 
 > { var |-> (prevResult, thisResult) } -> True / False
 -}
-iterEqSys :: (MonadST m, Eq v, Hashable v, Num n) =>
+iterEqSys :: (MonadST m, Hashable v, Num n) =>
   (HT.HashTable (World m) v (n, n) -> m Bool) -- ^ stopping criteria
   -> EqSys v n -- ^ the target equation system
   -> m (HT.HashTable (World m) v n)
@@ -65,13 +65,12 @@ iterEqSys toStop (EqSys lst) = evalContT $ callCC $ \exit -> do
   -- impossible to be here, just for type-checking
   error "Impossible to come here."
 
-toResult :: (Eq k, Hashable k) =>
-  HT.HashTable s k (v, v) -> ST s (HT.HashTable s k v)
+toResult :: Hashable k => HT.HashTable s k (v, v) -> ST s (HT.HashTable s k v)
 toResult resultMap = do
   lst <- HT.toList resultMap
   HT.fromList $ fmap (sndMap snd) lst
 
-computeRHS :: (Traversable t, Eq v, Hashable v, Num n) =>
+computeRHS :: (Traversable t, Hashable v, Num n) =>
   HT.HashTable s v (n, n) -> t (SynComp v n) -> ST s n
 computeRHS resultMap rhs = sum <$> forM rhs (computeSynComp resultMap)
   where

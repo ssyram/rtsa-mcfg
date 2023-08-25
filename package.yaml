@@ -32,6 +32,7 @@ dependencies:
 - monad-st
 - transformers
 - logict
+- mono-traversable
 - mut-data
 
 ghc-options:

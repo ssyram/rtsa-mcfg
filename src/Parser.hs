@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Parser (parseMCFG) where
 
 -- This file defines the way to parse a specific kind of MCFG.
@@ -43,7 +44,7 @@ lexer = T.makeTokenParser $ emptyDef
 identifier :: Parser String
 identifier = T.identifier lexer
 parens :: Parser a -> Parser a
-parens = T.parens lexer
+parens parser = T.parens lexer $ parser <* whiteSpace
 whiteSpace :: Parser ()
 whiteSpace = T.whiteSpace lexer
 reservedOp :: String -> Parser ()
@@ -98,7 +99,7 @@ instance Show Rule where
 
 
 lex :: Parser a -> Parser a
-lex parser = whiteSpace *> parser
+lex parser = try $ whiteSpace *> parser
 
 sym :: Parser Sym
 sym = lex $ Sym <$> identifier
@@ -147,18 +148,21 @@ instance Read Rule where
     Right (r, rest) -> [(r, rest)]
 
 -- -- >>> testParseRule
--- -- lnt (t1, tn) <- rnt1 (v11, v1n1), rnt_m (vm1, vmnm) .
--- testParseRule :: Maybe Rule
--- testParseRule = readMaybe "lnt (t1, tn) <- rnt1 (v11, v1n1), rnt_m (vm1, vmnm) ."
+-- -- Right lnt (, ) <- rnt1 (v11, v1n1), rnt_m (vm1, vmnm) .
+-- testParseRule :: Either String Rule
+-- testParseRule = do
+--   rule <- readEither "lnt (, ) <- rnt1 (v11, v1n1), rnt_m (vm1, vmnm) ."
+--   let Rule (_, terms) _ = rule
+--   Left $ printLstContent terms
+--   -- Left $ show $ length terms
+--   return rule
 
 
 -- ----------------------------- Convert to Objects.MCFG -----------------------------
 
-type SynVar = O.SynVar
-
 data ConvertCtx s = ConvertCtx
   { _ntDim :: HT.HashTable s String Int
-  , ntRules :: HT.HashTable s String [O.Rule String String SynVar] }
+  , ntRules :: HT.HashTable s String [O.Rule String String String] }
 
 initConvertCtx :: [Rule] -> ST s (ConvertCtx s)
 initConvertCtx rules = do
@@ -172,7 +176,7 @@ type ConvertState s = STReader ConvertCtx s
 data RuleCtx s = RuleCtx
   { -- | The current context state
     _convCtx :: ConvertCtx s
-  , varMap :: HT.HashTable s String SynVar
+  , varMap :: HT.HashTable s String (Int, Int)
   }
 
 type RuleState s = STReader RuleCtx s
@@ -186,7 +190,7 @@ ruleCtxGen = do
 runRuleGen :: RuleState s a -> ConvertState s a
 runRuleGen = strdrDelimit ruleCtxGen
 
-convMCFG :: [Rule] -> ConvertState s (O.MultiCtxFreeGrammar String String SynVar)
+convMCFG :: [Rule] -> ConvertState s (O.MultiCtxFreeGrammar String String String)
 convMCFG [] = error "No Rules to Convert to MCFG."
 convMCFG rules@(Rule (NonTer stName, _) _:_) = do
   forM_ rules $ \rule -> do
@@ -204,43 +208,42 @@ convMCFG rules@(Rule (NonTer stName, _) _:_) = do
       s <- HTC.toList tab
       return $ fromList s
 
-convRules :: Rule -> RuleState s (String, O.Rule String String SynVar)
+convRules :: Rule -> RuleState s (String, O.Rule String String String)
 convRules (Rule (NonTer nt, terms) rhs) = do
   -- Collect the variable map
   collectToVarMap rhs
   terms <- mapM convTerm terms
   return (nt, O.Rule terms $ simpleRHSConv rhs)
 
-convTerm :: Term -> RuleState s (O.Term String SynVar)
+convTerm :: Term -> RuleState s (O.Term String)
 convTerm (Term syms) = O.Term <$> mapM convSym syms
 
-convSym :: Sym -> RuleState s (O.Symbol String SynVar)
+convSym :: Sym -> RuleState s (O.Symbol String)
 convSym (Sym s) = do
   varMap <- asks varMap
   maybeRealVar <- lift $ HT.lookup varMap s
   case maybeRealVar of
-    Just sv -> return $ O.SVar sv
-    Nothing -> return $ O.STerminal s
+    Nothing  -> return $ O.STerminal s
+    Just pos -> return $ O.SVar pos
 
-simpleRHSConv :: [LocVarDecl] -> [O.LocVarDecl String SynVar]
+simpleRHSConv :: [LocVarDecl] -> [O.LocVarDecl String String]
 simpleRHSConv rhs =
-  flip fmap (zip [0..] rhs) $ \(ntIdx, LocVarDecl (NonTer nt, vars)) ->
-    O.LocVarDecl $ (,) nt $ flip fmap (zip [0..] vars) $ \(varIdx, _) ->
-      O.SynVar ntIdx varIdx
+  flip fmap rhs $ \(LocVarDecl (NonTer nt, vars)) ->
+    O.LocVarDecl (nt, fmap (\(Var s) -> s) vars)
 
 collectToVarMap :: [LocVarDecl] -> RuleState s ()
 collectToVarMap rhs = do
   varMap <- asks varMap
   forM_ (zip [0..] rhs) $ \(ntIdx, LocVarDecl (_, vars)) -> do
     forM_ (zip [0..] vars) $ \(varIdx, Var var) -> do
-      let synVar = O.SynVar ntIdx varIdx
+      let synVar = (ntIdx, varIdx)
       lift $ HT.mutate varMap var $ \case
         Just v  -> (Just v, ())
         Nothing -> (Just synVar, ())
 
 addDimInfo :: HT.HashTable s String Int -> Rule -> ST s ()
 addDimInfo dimMap rule@(Rule (NonTer nt, terms) rhs) = do
-  let lst = (nt, length terms) : [(nt, length vars) | (LocVarDecl (NonTer nt, vars)) <- rhs]
+  let lst = (nt, length terms) : [ (nt, length vars) | (LocVarDecl (NonTer nt, vars)) <- rhs ]
   forM_ lst $ \(nt, len) -> do
     maybeLen <- HT.lookup dimMap nt
     case maybeLen of
@@ -252,23 +255,28 @@ addDimInfo dimMap rule@(Rule (NonTer nt, terms) rhs) = do
           "But in Rule: \"" ++ show rule ++ "\"." ++
           "The dimension is: " ++ show len
 
-rulesToMCFG :: [Rule] -> O.MultiCtxFreeGrammar String String SynVar
+rulesToMCFG :: [Rule] -> O.MultiCtxFreeGrammar String String String
 rulesToMCFG rules = runST $ do
   ctx <- initConvertCtx rules
   runReaderT (convMCFG rules) ctx
 
 
--- --------------------------- Interface: parseMCFG & instance for `Read` ---------------------------
-
-parseMCFG :: String -> Either ParseError (O.MultiCtxFreeGrammar String String SynVar)
-parseMCFG str = case parseWithRest (many1 rule) "MCFG" str of
+preParseMCFG :: String -> Either ParseError [Rule]
+preParseMCFG str = case parseWithRest (many1 rule) "MCFG" str of
   Left msg -> Left msg
   Right (rules, rest) ->
     if not $ null rest then error $ "Un-parsible strings: \"" ++ rest
-    else return $ rulesToMCFG rules
+    else return rules
 
-instance Read (O.MultiCtxFreeGrammar String String SynVar) where
-  readsPrec :: Int -> ReadS (O.MultiCtxFreeGrammar String String SynVar)
+-- --------------------------- Interface: parseMCFG & instance for `Read` ---------------------------
+
+parseMCFG :: String -> Either ParseError (O.MultiCtxFreeGrammar String String String)
+parseMCFG str = rulesToMCFG <$> preParseMCFG str
+
+instance Read (O.MultiCtxFreeGrammar String String String) where
+  readsPrec :: Int -> ReadS (O.MultiCtxFreeGrammar String String String)
   readsPrec _ str = case parseMCFG str of
     Left pe -> error $ show pe
     Right mcfg -> [(mcfg, "")]
+
+
