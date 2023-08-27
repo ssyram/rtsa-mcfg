@@ -10,12 +10,12 @@ module Examples (
   backToExampleCOPY
 ) where
 import Parser ()
-import Objects (mapMCFG, ExtendedRTSA, SpUnit (SpUnit), MultiCtxFreeGrammar, mapAut, RestrictedTreeStackAut, mapExtRtsa)
+import Objects (mapMCFG, ExtendedRTSA (eRtsaDownMap, eRtsaKMap), SpUnit (SpUnit), MultiCtxFreeGrammar, mapAut, RestrictedTreeStackAut, mapExtRtsa)
 import Utils (NString(NString), stAutoNumber)
 import GrammarToAut ( LocMem, StackSym, State, mcfgToRtsa )
 import Control.Monad.Identity (Identity(runIdentity))
-import Data.Hashable
-import Control.Monad.ST.Strict
+import Data.Hashable ( Hashable )
+import Control.Monad.ST.Strict ( ST, runST )
 import EqSysBuild.MultiCFG (rTSAToMultiCFG, NonTer, Var)
 
 {-
@@ -142,5 +142,7 @@ backToExampleCOPY :: IO
      (NonTer Int Int)
      String
      (Var Int))
-backToExampleCOPY = simplifiedExampleRtsaCOPY >>= rTSAToMultiCFG
+backToExampleCOPY = do
+  ext <- simplifiedExampleRtsaCOPY
+  rTSAToMultiCFG $ ext { eRtsaDownMap = Nothing, eRtsaKMap = Nothing }
 

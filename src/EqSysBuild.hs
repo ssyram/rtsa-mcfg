@@ -44,13 +44,13 @@ import Control.Monad.Except (ExceptT, MonadError (catchError, throwError), Monad
 import Control.Monad.Reader (ReaderT (runReaderT), asks, MonadReader (ask, local))
 import Control.Monad.IO.Class (liftIO)
 import qualified MData.LoopQueue as Q
-import Utils (setAdd, whenM, setHas, HashSet, whileM, mapToHashTable, Modifiable (..), (<<-), (|>), RevList (RevList), revToList, sndMap, printLstContent, quoteBy, addIndent)
+import Utils (setAdd, whenM, setHas, HashSet, whileM, mapToHashTable, Modifiable (..), (|>), RevList (RevList), revToList, sndMap, printLstContent, quoteBy, addIndent, printTheList)
 import Control.Monad ( foldM, forM_, void, when)
 import Data.Maybe (fromMaybe)
 import Data.Hashable ( Hashable(hash) )
 import GHC.Generics (Generic)
 import Control.Monad.Cont (MonadCont (callCC))
-import Control.Monad.Trans.Cont ( ContT, evalContT, shiftT )
+import Control.Monad.Trans.Cont (evalContT, shiftT )
 import Data.IORef (IORef)
 import qualified MData.Stack as S
 import qualified Data.Set as Set
@@ -111,7 +111,9 @@ data BuildInfo q m g sp acc = BuildInfo
   , accInfo :: acc
   -- | The `D` list here is REVERSED!
   , upRevMap :: M.Map g (RevList q, Int)
-  , ctx :: BuildContext q m g sp acc }
+  , ctx :: BuildContext q m g sp acc
+  , curVar :: AbsVar q g
+  , curEqRHS :: IORef [InSynComp q g acc] }
 
 class (Monoid acc) => AccStepInfo acc g | acc -> g where
   -- | acc <> \Down with implicit \Down
@@ -146,7 +148,6 @@ data BuildContext q m g sp acc = BuildContext
   , vaccumTrips :: HT.BasicHashTable (AbsVar q g) ()
   , exploredCount :: IORef Integer
   , results :: IORef [(AbsVar q g, [InSynComp q g acc])]
-  , curEqRHS :: IORef [InSynComp q g acc]
   -- require separate external information
   , buildMode :: BuildMode q g acc
   , flags :: Flags }
@@ -388,11 +389,16 @@ traverseAndBuild = do {
 -- updateAccInfo stepInfo = modify $ \info -> info { accInfo = accInfo info `mappend` stepInfo }
 
 
-recordUpdate :: [UpNodeVar q g] -> BuildState q m g sp acc ()
+recordUpdate :: StdReq q m g sp acc => [UpNodeVar q g] -> BuildState q m g sp acc ()
 recordUpdate upNodesVars = do
   acc <- asks accInfo
   let newInSynComp = InSynComp acc $ fmap toAbsVar upNodesVars
-  rhsCell <- asksCtx curEqRHS
+  rhsCell <- asks curEqRHS
+  var <- asks curVar
+  printTheList  [ "Var:"
+                , quoteBy "``" $ show var
+                , "added new component:"
+                , show newInSynComp ]
   liftIO $ modifyRef rhsCell (newInSynComp:)
 
 
@@ -420,7 +426,7 @@ toUpNodeVar maybeNewUpVar (g, (revD, lenD)) =
 
 checkNonZeroVar :: (SpOp sp, StdReq q m g sp acc) =>
   UpNodeVar q g -> BuildState q m g sp acc ()
-checkNonZeroVar var = do
+checkNonZeroVar var@(UpNodeVar _len _ _) = do
   liftIO $ putStrLn $ "Checking var: " ++ show var
   var <- return $ toAbsVar var
   res <- buildThisVar var
@@ -492,9 +498,15 @@ tryUpThenDown uq nm tg = do
         hashCode = hash tgVar
 
     -- When it is OK, continue traversing by the predicted `qc`
-    notOverK <- notOverK tgLenD tg
+    notOverK <- notOverK newTgLenD tg
     notLoggedVaccumVar <- notLoggedVaccumVar tgVar
     when (notLoggedVaccumVar && notOverK) $ do
+
+      liftIO $ putStrLn $ unwords
+        [ "Try to go to direction:"
+        , show tg ++ "."
+        , "And now the direction is:"
+        , show (newRevTgD, newTgLenD) ++ "." ]
 
       local (\info -> info
         -- update the `info` with new `upRevMap`
@@ -581,32 +593,32 @@ reTravBuildVar var explored todo = findCache var >>= \case
     return BRReTravUnencountered
 
 
-saveAndRecoverCurRHS ::
-  Stack (AbsVar q g, [InSynComp q g acc])
-  -> ContT BuildResult (CtxState q m g sp acc) ()
-saveAndRecoverCurRHS envStk = do
-  -- DEBUG: at the beginning, the `envStk` is empty, when there is no need to save current RHS
-  isEntry <- liftIO $ S.isEmpty envStk
-  if isEntry then return ()
-  else shiftT $ \rest -> do {
-    -- get the cell / pointer
-    rhsCell <- asks curEqRHS;
-    -- get the RHS from cell and save
-    curRHS <- liftIO $ readRef rhsCell;
-    ~(Just (var, _)) <- liftIO $ S.pop envStk;
-    liftIO $ S.push envStk (var, curRHS);
-    -- liftIO $ modifyRef envStk $ \ ~((var, _) : lst) -> (var, curRHS) : lst;
+-- saveAndRecoverCurRHS ::
+--   Stack (AbsVar q g, [InSynComp q g acc])
+--   -> ContT BuildResult (CtxState q m g sp acc) ()
+-- saveAndRecoverCurRHS envStk = do
+--   -- DEBUG: at the beginning, the `envStk` is empty, when there is no need to save current RHS
+--   isEntry <- liftIO $ S.isEmpty envStk
+--   if isEntry then return ()
+--   else shiftT $ \rest -> do {
+--     -- get the cell / pointer
+--     rhsCell <- asks curEqRHS;
+--     -- get the RHS from cell and save
+--     curRHS <- liftIO $ readRef rhsCell;
+--     ~(Just (var, _)) <- liftIO $ S.pop envStk;
+--     liftIO $ S.push envStk (var, curRHS);
+--     -- liftIO $ modifyRef envStk $ \ ~((var, _) : lst) -> (var, curRHS) : lst;
 
-    -- get the return value
-    r <- lift $ rest ();
+--     -- get the return value
+--     r <- lift $ rest ();
 
-    -- write the RHS back to the cell
-    ~(Just (_, preRHS)) <- liftIO $ S.top envStk;
-    liftIO $ rhsCell <<- preRHS;
+--     -- write the RHS back to the cell
+--     ~(Just (_, preRHS)) <- liftIO $ S.top envStk;
+--     liftIO $ rhsCell <<- preRHS;
 
-    -- actually return the value
-    return r
-  }
+--     -- actually return the value
+--     return r
+--   }
 
 
 dfsBuildVar :: (Ord g, SpOp sp, StdReq q m g sp acc) =>
@@ -626,10 +638,10 @@ dfsBuildVar var pathSet envStk = evalContT $ callCC $ \resultIn -> do
     liftIO $ HT.delete pathSet var
     return r
   -- save and release the current stack enviroment to the current top variable
-  saveAndRecoverCurRHS envStk
-
+  -- saveAndRecoverCurRHS envStk
   -- create a new environment
-  asks curEqRHS >>= liftIO . flip writeRef []
+  -- asks curEqRHS >>= liftIO . flip writeRef []
+
   -- push the new variable to the top of the envStk
   liftIO $ S.push envStk (var, [])
 
@@ -661,9 +673,7 @@ buildVar :: (SpOp sp, StdReq q m g sp acc) =>
 buildVar var = do
   logNewVar var
   initInfo <- genInitInfo var
-  -- Refresh the RHS cell
-  rhsCell <- asks curEqRHS
-  liftIO $ rhsCell <<- []
+  let rhsCell = curEqRHS initInfo
 
   -- Traverse and build, which accumulates results to the `rhsCell`
   res <- liftIO $ runExceptT $ runReaderT traverseAndBuild initInfo
@@ -699,9 +709,10 @@ logNewVar var = do
 
 genInitInfo :: (StdReq q m g sp acc) =>
   AbsVar q g -> CtxState q m g sp acc (BuildInfo q m g sp acc)
-genInitInfo (AbsVar _ ~(q1:dLst) g) = do
+genInitInfo v@(AbsVar _ ~(q1:dLst) g) = do
   m0 <- asks defLocMem
   ctx <- ask
+  rhs <- liftIO $ newRef []
   let initAcc = mempty
   return $ BuildInfo
     { curState = q1
@@ -711,7 +722,9 @@ genInitInfo (AbsVar _ ~(q1:dLst) g) = do
     , curD = dLst
     , accInfo = initAcc
     , upRevMap = M.empty
-    , ctx = ctx }
+    , ctx = ctx
+    , curVar = v
+    , curEqRHS = rhs }
 
 
 initReTravBuildVar :: (SpOp sp, StdReq q m g sp acc) =>AbsVar q g
@@ -842,7 +855,6 @@ defGetBuildContext eRtsa = do
   newVacTrips <- HT.new
   counterCell <- newRef 0
   resCell <- newRef []
-  stkCell <- newRef []
   mode <- consDeepFsMode
   return $ BuildContext
     { rules = rules
@@ -852,7 +864,6 @@ defGetBuildContext eRtsa = do
     , kMap = kMap
     , cacheResults = newCache
     , vaccumTrips = newVacTrips
-    , curEqRHS = stkCell
     , results = resCell
     , exploredCount = counterCell
     , buildMode = mode

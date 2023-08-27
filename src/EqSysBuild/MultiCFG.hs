@@ -56,7 +56,10 @@ type Sym t = Symbol t
 [[1,2],[3,4],[5,6,7,8],[9,10],[11,12]]
 -}
 newtype DRevList g = DRevList (RevList (RevList g))
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
+
+instance Show g => Show (DRevList g) where
+  show = show . revDoubleRevList
 
 revDoubleRevList :: DRevList a -> [[a]]
 revDoubleRevList (DRevList lst) = revToList <$> revToList lst

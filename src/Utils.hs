@@ -24,7 +24,7 @@ import Data.Hashable ( Hashable )
 import Data.STRef.Strict (readSTRef, writeSTRef, STRef, newSTRef, modifySTRef')
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import Data.HashTable.IO (IOHashTable)
-import Control.Monad.Cont (MonadCont (callCC))
+import Control.Monad.Cont (MonadCont (callCC), MonadIO (liftIO))
 import Control.Monad.Trans.Cont (evalContT)
 import Control.Monad.Logic (LogicT(LogicT))
 import qualified Data.List as List
@@ -74,6 +74,9 @@ hashTableToMap :: (HT.HashTable h, Ord k, Hashable k) => IOHashTable h k a -> IO
 hashTableToMap tab = do
   lst <- HTO.toList tab
   return $ M.fromList lst
+
+printTheList :: MonadIO m => [String] -> m ()
+printTheList lst = liftIO $ putStrLn $ unwords lst
 
 -- class MonadST m | m -> where
 --   liftST :: ST a -> m a

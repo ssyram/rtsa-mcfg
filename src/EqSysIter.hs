@@ -50,22 +50,31 @@ iterEqSys toStop (EqSys lst) = evalContT $ callCC $ \exit -> do
 
   -- Conduct iteration, until `toStop` becomes `true`, inside the loop
   whileM (return True) $ do
-    -- one round of iteration -- information kept within the second place of the `resultMap`
+
+    -- one round of iteration --
+    -- information kept within the second place of the `resultMap`
     liftST $ forM_ lst $ \(v, rhs) -> do
       newVal <- computeRHS resultMap rhs
       HT.mutate resultMap v $ \ ~(Just pair) ->
         (Just $ sndMap (const newVal) pair, ())
+      
     -- if it should stop according to the provided criteria, transform the result and get out
     whenM (lift $ toStop resultMap) $ do
       resultMap <- liftST $ toResult resultMap
       exit resultMap
+
     -- if it should keep going
     -- move this round of result to position `fst` to become the previous round for the next round
-    liftST $ forM_ lst $ \(v, _) -> HT.mutate resultMap v $ \ ~(Just pair) -> (Just $ swap pair, ())
+    liftST $ forM_ lst $ \(v, _) -> 
+      HT.mutate resultMap v $ \ ~(Just pair) ->
+        (Just $ swap pair, ())
 
   -- impossible to be here, just for type-checking
   error "Impossible to come here."
 
+
+
+-- | According to the convention, the second place contains the latest information
 toResult :: Hashable k => HT.HashTable s k (v, v) -> ST s (HT.HashTable s k v)
 toResult resultMap = do
   lst <- HT.toList resultMap
