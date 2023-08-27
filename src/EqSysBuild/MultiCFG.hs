@@ -10,6 +10,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE MonoLocalBinds #-}
 {-# OPTIONS_GHC -Wno-deriving-defaults #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 module EqSysBuild.MultiCFG (
   NonTer,
   Var(..),
@@ -39,7 +40,11 @@ type NonTer q g = AbsVar q g
 -- | Internal Var
 newtype InVar g = InVar g deriving (Eq, Ord, Show, Generic, Hashable)
 
-newtype Var g = Var (g, Int) deriving (Show)
+newtype Var g = Var (g, Int)
+
+instance Show g => Show (Var g) where
+  show :: Show g => Var g -> String
+  show (Var p) = "v@" ++ show p
 
 data InSym t g
   = ISTer t

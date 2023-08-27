@@ -115,7 +115,7 @@ instance (Show nt, Show t, Show v) =>
     [ "MCFG {"
     , "  Rules: ["
     , printListMap (\nt r -> "    " ++ show nt ++ " " ++ show r ++ ".") map
-    , "  ]"
+    , "  ],"
     , "  Starting Non-Terminal: " ++ show nt
     , "}"
     ]
@@ -326,7 +326,7 @@ instance (Show q, Show m, Show g, Show info, Show (sp q m g)) =>
     ExtendedRTSA q m g info sp -> String
   show er = intercalate "\n"
     [ "Extended rTSA: {"
-    , addIndent 1 "  " (show $ eRtsaAutomaton er) ++ ","
+    , init (addIndent 1 "  " (show $ eRtsaAutomaton er)) ++ ","
     , "  k map: " ++ printKMap (eRtsaKMap er) ++ ","
     , "  down map: " ++ printDownMap (eRtsaDownMap er)
     , "}" ]
