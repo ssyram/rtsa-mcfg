@@ -6,7 +6,7 @@ import EqSysBuild (EqSys (..), SynComp (SynComp))
 import qualified Data.HashTable.Class as HT (toList)
 import qualified Data.HashTable.ST.Basic as HT
 import Control.Monad.ST (runST, ST)
-import Utils (Modifiable(newRef, readRef), whileM, (<<-), sndMapM, anyM, (|>), RevList (RevList), revToList, sndMap)
+import Utils (Modifiable(newRef, readRef), whileM, (<<-), sndMapM, anyM, (|>), RevList (RevList), revToList, sndMap, quoteBy, printLstContent)
 import qualified Data.List as List
 import Data.Hashable
 import Control.Monad (forM_, filterM, forM, foldM)
@@ -14,6 +14,7 @@ import Data.Maybe (isJust, fromJust)
 import qualified Data.Map.Strict as M
 import Control.Monad.ST.Class (MonadST (liftST))
 import EqSysIter (iterEqSys)
+import Debug.Trace (trace)
 
 -- Old specific version
 
@@ -58,7 +59,7 @@ import EqSysIter (iterEqSys)
 
 
 -- | The abstract framework of constant propagation
-constPropagate :: (MonadST m) =>
+constPropagate :: (MonadST m, Show v, Show acc) =>
   ([SynComp v acc] -> Bool)  -- ^ partition function to judge 
   -> ([(v, [SynComp v acc])] -> m ())
   -> ([SynComp v acc] -> m [SynComp v acc])
@@ -69,9 +70,11 @@ constPropagate isConst logConstVars modifyRHS eqSys = do
   changedCell <- liftST $ newRef True
 
   whileM (liftST $ readRef changedCell) $ do
-    (EqSys lst) <- liftST $ readRef retCell
+    eqSys@(EqSys lst) <- liftST $ readRef retCell
+    trace ("To propagate: " ++ show eqSys) $ return ()
     -- separate those constant variables from the whole EqSys by partitioning them
     (constVars, lst) <- return $ List.partition (isConst . snd) lst
+    trace ("Found const vars: " ++ show (quoteBy "[]" $ printLstContent constVars)) $ return ()
     -- log / record these constant variables
     logConstVars constVars
     -- modify the RHS of the left variables
@@ -102,7 +105,7 @@ They are expected to be handled by `removeRecurEmptyVar`.
 Returns all the found empty variables (non-repeating) and the refined equation system
 -}
 removeSimpleEmptyVars ::
-  Hashable v => EqSys v acc -> ([v], EqSys v acc)
+  (Hashable v, Show v, Show acc) => EqSys v acc -> ([v], EqSys v acc)
 removeSimpleEmptyVars eqSys = runST $ do
   zeroVars <- HT.new
 
@@ -119,12 +122,16 @@ removeSimpleEmptyVars eqSys = runST $ do
 filterRHS :: Hashable v => HT.HashTable s v ()
   -> [SynComp v acc]
   -> ST s [SynComp v acc]
-filterRHS zeroVars = filterM $ hasEmptyVar zeroVars
+filterRHS zeroVars lst = do
+  -- zv <- HT.toList zeroVars
+  -- trace ("Zero Vars to Filter: " ++ show (quoteBy "[]" $ printLstContent zv)) $ return ()
+  filterM (fmap not . hasEmptyVar zeroVars) lst
   where
-    hasEmptyVar :: Hashable v => HT.HashTable s v () -> SynComp v acc -> ST s Bool
-    hasEmptyVar zeroVars (SynComp (_, lst)) =
-      anyM (fmap isJust . HT.lookup zeroVars) lst
-
+    hasEmptyVar :: (Hashable v) => HT.HashTable s v () -> SynComp v acc -> ST s Bool
+    hasEmptyVar zeroVars (SynComp (_, lst)) = do
+      anyM (finder zeroVars) lst
+    finder zeroVars v = do
+      isJust <$> HT.lookup zeroVars v
 
 {-| Use iteration to find and erase the mutually depending empty variables
 
@@ -135,11 +142,12 @@ For example:
 In this case, the `removeSimpleEmptyVars` is not going to work because it just erases 
 the direct stuff.
 -}
-removeRecurEmptyVar :: Hashable v =>EqSys v acc -> ([v], EqSys v acc)
+removeRecurEmptyVar :: (Hashable v, Show v, Show acc) =>EqSys v acc -> ([v], EqSys v acc)
 removeRecurEmptyVar (EqSys oriLst) =
   fmap (sndMap $ fmap $ \(SynComp (_, vars)) -> SynComp (1 :: Int, vars)) oriLst
   |> EqSys
   |> \eqSys@(EqSys lst) -> runST $ do
+    trace ("To iterate: " ++ show eqSys) $ return ()
     cRound <- newRef (0 :: Int)
     let targetRound = length lst + 1
     iterRes <- iterEqSys (reachedTargetRound cRound targetRound) eqSys
@@ -159,7 +167,7 @@ reachedTargetRound cRound targetRound _ = do
 -- | Combines `removeSimpleEmptyVars` and `removeRecurEmptyVars`
 --   Guaranteed to erase all the empty variables
 --   Returns the non-duplicating list of found empty variables and the refined EqSys
-removeEmptyVars :: (Hashable v) =>EqSys v acc -> ([v], EqSys v acc)
+removeEmptyVars :: (Hashable v, Show v, Show acc) => EqSys v acc -> ([v], EqSys v acc)
 removeEmptyVars eqSys =
   let (emptyVars, newEqSys) = removeSimpleEmptyVars eqSys
       (moreEmptyVars, retEqSys) = removeRecurEmptyVar newEqSys
@@ -170,7 +178,7 @@ removeEmptyVars eqSys =
 --   Because the substitution will combine the accumulatives, so the position may not hold
 --   Returns the map of found constant variables and the equation system
 substConstant ::
-  (Ord v, Hashable v, Monoid acc) =>
+  (Ord v, Hashable v, Monoid acc, Show v, Show acc) =>
   EqSys v acc -> (M.Map v acc, EqSys v acc)
 substConstant eqSys = runST $ do
   constMap <- HT.new

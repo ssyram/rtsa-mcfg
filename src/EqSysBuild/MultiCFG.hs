@@ -19,7 +19,7 @@ module EqSysBuild.MultiCFG (
 ) where
 import Objects (RestrictedTreeStackAut, Gamma (GNorm), Symbol (SVar, STerminal), mapInfo, MultiCtxFreeGrammar (MultiCtxFreeGrammar), Rule (Rule), Term (Term), LocVarDecl (LocVarDecl), ExtendedRTSA (eRtsaAutomaton))
 import Utils (RevList (..), revToList, toRevList, (|>), Modifiable (newRef, readRef, modifyRef))
-import EqSysBuild (AccStepInfo (..), StdReq, constructEqSysFromX0, EqSys (..), AbsVar (AbsVar), SynComp (SynComp), x0Of, SpOp)
+import EqSysBuild (AccStepInfo (..), StdReq, EqSys (..), AbsVar (AbsVar), SynComp (SynComp), x0Of, defGetBuildContext, runConstruction, BuildContext (flags), Flags (noUpVar))
 import EqSysSimp (removeEmptyVars)
 import qualified Data.Map.Strict as M
 import Control.Monad.ST (runST, ST)
@@ -29,6 +29,7 @@ import Data.HashTable.ST.Basic (HashTable)
 import Control.Monad.Cont (forM_)
 import Data.STRef.Strict (STRef)
 import GHC.Generics (Generic)
+import Debug.Trace (trace)
 
 
 -- ------------------------------ Concepts Definition ------------------------------
@@ -36,14 +37,14 @@ import GHC.Generics (Generic)
 
 type NonTer q g = AbsVar q g
 -- | Internal Var
-newtype InVar g = InVar g deriving (Eq, Ord, Generic, Hashable)
+newtype InVar g = InVar g deriving (Eq, Ord, Show, Generic, Hashable)
 
-newtype Var g = Var (g, Int)
+newtype Var g = Var (g, Int) deriving (Show)
 
 data InSym t g
   = ISTer t
   | ISVar (InVar g)
-  deriving (Eq, Ord, Generic, Hashable)
+  deriving (Eq, Ord, Generic, Hashable, Show)
 
 type Sym t = Symbol t
 
@@ -55,7 +56,7 @@ type Sym t = Symbol t
 [[1,2],[3,4],[5,6,7,8],[9,10],[11,12]]
 -}
 newtype DRevList g = DRevList (RevList (RevList g))
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 revDoubleRevList :: DRevList a -> [[a]]
 revDoubleRevList (DRevList lst) = revToList <$> revToList lst
@@ -80,6 +81,11 @@ instance Monoid (DRevList g) where
 
 type AccInfo t g = DRevList (InSym t g)
 
+-- -- >>> test
+-- -- DRevList (RevList [RevList [ISVar (InVar 2),ISTer 1]])
+-- test :: DRevList (InSym Integer Integer)
+-- test = mappendUpMark (DRevList (RevList [RevList [ISTer 1]])) 2
+
 instance AccStepInfo (AccInfo t g) g where
   mappendDownMark :: AccInfo t g -> AccInfo t g
   mappendDownMark (DRevList (RevList rls)) = DRevList $ RevList $ RevList [] : rls
@@ -99,13 +105,16 @@ Procedure:
 - Convert the equation system to the MCFG.
 -}
 rTSAToMultiCFG ::
-  (StdReq q m g (AccInfo t g), Ord q, SpOp sp, Ord m, Ord (sp q m g), Ord t) =>
+  (StdReq q m g sp (AccInfo t g), Ord q, Ord m, Ord (sp q m g), Ord t) =>
   ExtendedRTSA q m g [t] sp
   -> IO (MultiCtxFreeGrammar (NonTer q g) t (Var g))
 rTSAToMultiCFG eRtsa = do
   let rtsa = prepareRTSA $ eRtsaAutomaton eRtsa
-  eqSys <- constructEqSysFromX0 $ eRtsa { eRtsaAutomaton = rtsa }
+  ctx <- defGetBuildContext eRtsa { eRtsaAutomaton = rtsa }
+  eqSys <- runConstruction ctx { flags = (flags ctx) { noUpVar = True } } $ x0Of rtsa
+  trace (show eqSys) $ return ()
   (_zeroVars, eqSys) <- return $ removeEmptyVars eqSys
+  -- trace ("Empty vars found: " ++ show _zeroVars) $ return ()
   let x0 = x0Of rtsa
   return $ eqSysToMultiCFG x0 eqSys
 
@@ -166,7 +175,7 @@ genMultiCFGRuleList (EqSys lst) = do
              |> fmap Term
       rhs  =
         [
-          LocVarDecl (v, [ Var (g, idx) | idx <- [0..len `div` 2] ])
+          LocVarDecl (v, [ Var (g, idx) | idx <- [0..(len - 1) `div` 2] ])
           |
           v@(AbsVar len _ ~(GNorm g)) <- vars
         ]

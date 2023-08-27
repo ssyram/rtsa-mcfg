@@ -53,7 +53,8 @@ iterEqSys toStop (EqSys lst) = evalContT $ callCC $ \exit -> do
     -- one round of iteration -- information kept within the second place of the `resultMap`
     liftST $ forM_ lst $ \(v, rhs) -> do
       newVal <- computeRHS resultMap rhs
-      HT.mutate resultMap v $ \ ~(Just pair) -> (Just $ sndMap (const newVal) pair, ())
+      HT.mutate resultMap v $ \ ~(Just pair) ->
+        (Just $ sndMap (const newVal) pair, ())
     -- if it should stop according to the provided criteria, transform the result and get out
     whenM (lift $ toStop resultMap) $ do
       resultMap <- liftST $ toResult resultMap

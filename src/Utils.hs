@@ -206,10 +206,18 @@ bothMap f (a, b) = (f a, f b)
 pairMap :: (t1 -> a, t2 -> b) -> (t1, t2) -> (a, b)
 pairMap (f, g) (a, b) = (f a, g b)
 
+{-| Generalised version of `any`.
+
+>>> anyM (return . odd) [2, 4, 6]
+False
+
+>>> anyM (return . odd) [1, 2, 3]
+True
+-}
 anyM :: (Monad m, Foldable t1) => (t2 -> m Bool) -> t1 t2 -> m Bool
 anyM f lst = evalContT $ callCC $ \exit -> do
   forM_ lst $ \e -> do
-    whenM (lift $ not <$> f e) $ exit True
+    whenM (lift $ f e) $ exit True
   return False
 
 allM :: (Monad f, Foldable t1) => (a -> f Bool) -> t1 a -> f Bool

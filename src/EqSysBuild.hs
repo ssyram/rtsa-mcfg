@@ -34,17 +34,17 @@ module EqSysBuild (
   constructEqSysFromX0,
   consBreathFsMode,
   SynComp(..),
-  SpOp(..)
+  SpOp(..),
+  defGetBuildContext
 ) where
 import qualified Data.Map.Strict as M
 import qualified Data.HashTable.IO as HT
 import Objects (Operation (..), RestrictedTreeStackAut (rtsaRules, rtsaRestriction, rtsaDefLocMem, rtsaInitSt), SpTer, SpHorizontal (SpHor), Gamma (GBot, GNorm), isBot, SpUnit, ExtendedRTSA (eRtsaAutomaton, eRtsaDownMap, eRtsaKMap))
 import Control.Monad.Except (ExceptT, MonadError (catchError, throwError), MonadTrans (lift), runExceptT)
-import Control.Monad.State.Strict (StateT, gets, modify, evalStateT)
-import Control.Monad.Reader (ReaderT (runReaderT), asks)
+import Control.Monad.Reader (ReaderT (runReaderT), asks, MonadReader (ask, local))
 import Control.Monad.IO.Class (liftIO)
 import qualified MData.LoopQueue as Q
-import Utils (setAdd, whenM, setHas, HashSet, whileM, mapToHashTable, Modifiable (..), (<<-), (|>), RevList (RevList), revToList, sndMap)
+import Utils (setAdd, whenM, setHas, HashSet, whileM, mapToHashTable, Modifiable (..), (<<-), (|>), RevList (RevList), revToList, sndMap, printLstContent, quoteBy, addIndent)
 import Control.Monad ( foldM, forM_, void, when)
 import Data.Maybe (fromMaybe)
 import Data.Hashable ( Hashable(hash) )
@@ -54,9 +54,16 @@ import Control.Monad.Trans.Cont ( ContT, evalContT, shiftT )
 import Data.IORef (IORef)
 import qualified MData.Stack as S
 import qualified Data.Set as Set
+import Data.Either (isLeft)
+import Data.List (intercalate)
 
 type Queue = Q.IOLoopQueue
 type Stack = S.IODefStack
+
+
+asksCtx :: MonadReader (BuildInfo q m g sp acc) f =>
+  (BuildContext q m g sp acc -> a) -> f a
+asksCtx f = asks $ f . ctx
 
 
 -- This file defines an abstract general method to build the equation system for rTSA
@@ -95,7 +102,7 @@ data BuildMode q g acc
     { bfsQueue :: Queue (AbsVar q g) }
   | BMRetraverse (HT.BasicHashTable (AbsVar q g) ()) (Queue (AbsVar q g))
 
-data BuildInfo q m g acc = BuildInfo
+data BuildInfo q m g sp acc = BuildInfo
   { curState :: q
   , curLocMem :: m
   , curGamma :: Gamma g
@@ -103,7 +110,8 @@ data BuildInfo q m g acc = BuildInfo
   , curD :: [q]
   , accInfo :: acc
   -- | The `D` list here is REVERSED!
-  , upRevMap :: M.Map g (RevList q, Int) }
+  , upRevMap :: M.Map g (RevList q, Int)
+  , ctx :: BuildContext q m g sp acc }
 
 class (Monoid acc) => AccStepInfo acc g | acc -> g where
   -- | acc <> \Down with implicit \Down
@@ -123,6 +131,7 @@ data Flags = Flags
   , recordAlsoFoundZeroVar :: Bool }
 
 data InSynComp q g acc = InSynComp acc [AbsVar q g]
+  deriving (Show)
 
 data BuildContext q m g sp acc = BuildContext
   -- the rTSA stuff
@@ -158,16 +167,14 @@ data BuildMessage q m g
 
 -- newtype 
 type
-  BuildState q m g sp acc a =
+  BuildState q m g sp acc =
   -- BuildState { runBuildState :: 
-      StateT (BuildInfo q m g acc) (CtxState q m g sp acc) a
+      ReaderT (BuildInfo q m g sp acc) (ExceptT (BuildExcept q g) IO)
   -- }
   -- deriving (Functor, Applicative, Monad)
 
 type CtxState q m g sp acc =
-  ReaderT (BuildContext q m g sp acc) (
-      ExceptT (BuildExcept q g) IO
-  )
+  ReaderT (BuildContext q m g sp acc) IO
 
 -- -- | The specialised context for actual customisation
 -- data SpecialisedContext q m g sp acc = SpecialisedContext
@@ -190,8 +197,11 @@ class (Eq q
       , Show q
       , Show m
       , Show g
+      , Show acc
+      , SpOp sp
+      , Show (sp q m g)
       , AccStepInfo acc g) =>
-  StdReq q m g acc
+  StdReq q m g sp acc
 
 instance (Eq q
       , Ord g
@@ -202,8 +212,11 @@ instance (Eq q
       , Show q
       , Show m
       , Show g
+      , Show acc
+      , SpOp sp
+      , Show (sp q m g)
       , AccStepInfo acc g) =>
-  StdReq q m g acc
+  StdReq q m g sp acc
 
 -- -- | This is to test that from a generator function
 -- --   it is possible to create a stuff like a class.
@@ -224,10 +237,10 @@ instance (Eq q
 --     addCell cell = liftIO $ modifyRef cell (+1)
 --     getCell cell = liftIO $ readRef cell
 
--- instance MonadState (BuildInfo q m g acc) (BuildState q m g sp acc) where
---   get :: BuildState q m g sp acc (BuildInfo q m g acc)
+-- instance MonadState (BuildInfo q m g sp acc) (BuildState q m g sp acc) where
+--   get :: BuildState q m g sp acc (BuildInfo q m g sp acc)
 --   get = BuildState get
---   put :: BuildInfo q m g acc -> BuildState q m g sp acc ()
+--   put :: BuildInfo q m g sp acc -> BuildState q m g sp acc ()
 --   put = BuildState (put s)
 
 -- instance MonadReader (BuildContext q m g info sp) (BuildState q m g sp acc) where
@@ -254,40 +267,40 @@ recordVaccumVar :: (Eq q, Eq g, Hashable q, Hashable g) =>
 recordVaccumVar var
   | isUp var  = return ()
   | otherwise = do
-    vacSet <- asks vaccumTrips
+    vacSet <- asksCtx vaccumTrips
     liftIO $ void $ setAdd vacSet var
 
 possibleDowns :: (Eq q, Eq g, Hashable q, Hashable g) =>
   q -> g -> BuildState q m g sp acc [q]
 possibleDowns q g = do
-  downs <- asks downPredictMap
+  downs <- asksCtx downPredictMap
   liftIO $ fromMaybe [] <$> HT.lookup downs (q, g)
 
-curStatus :: BuildInfo q m g acc -> (q, m, Gamma g)
+curStatus :: BuildInfo q m g sp acc -> (q, m, Gamma g)
 curStatus info = (curState info, curLocMem info, curGamma info)
 
 getUpRevD :: Ord g => g -> BuildState q m g sp acc (RevList q, Int)
 getUpRevD g = do
-  map <- gets upRevMap
+  map <- asks upRevMap
   case map M.!? g of
-    Nothing -> return (RevList [], 0)
+    Nothing  -> return (RevList [], 0)
     Just upD -> return upD
 
 notLoggedVaccumVar :: (Eq q, Eq g, Hashable q, Hashable g) =>
   AbsVar q g -> BuildState q m g sp acc Bool
 notLoggedVaccumVar var = do
-  cache <- asks cacheResults
+  cache <- asksCtx cacheResults
   res <- liftIO $ HT.lookup cache var
   case res of
     Just BRStructuralZero -> return False
     _otherwise -> if isUp var then return True else do
-      vaccumTrips <- asks vaccumTrips
-      liftIO $ vaccumTrips `setHas` var
+      vaccumTrips <- asksCtx vaccumTrips
+      liftIO $ not <$> vaccumTrips `setHas` var
 
 notOverK :: (Hashable g, Eq g) => Int -> g -> BuildState q m g sp acc Bool
 notOverK len g = do
-  maybeGk <- asks kMap >>= \map -> liftIO $ HT.lookup map g
-  globalK <- asks kNum
+  maybeGk <- asksCtx kMap >>= \map -> liftIO $ HT.lookup map g
+  globalK <- asksCtx kNum
   let gk = fromMaybe globalK maybeGk
   return $ (len + 1) `div` 2 <= gk
 
@@ -303,78 +316,95 @@ catchPossibleVaccumVar tgVar hashCode execBody =
                       else throwError $ EVarMark av
     otherError  -> throwError otherError
 
-remapRevUpMap :: Ord g => g -> (RevList q, Int) -> BuildState q m g sp acc ()
-remapRevUpMap g newVal =
-  modify $ \info -> do
-    let revUpMap = upRevMap info
-    info { upRevMap = M.insert g newVal revUpMap }
-
-logAndAddDepth :: BuildState q m g sp acc ()
-logAndAddDepth = do
-  depth <- gets curDepth
+logDepth :: BuildState q m g sp acc ()
+logDepth = do
+  depth <- asks curDepth
   liftIO $ print (BMsgDepth depth :: BuildMessage Int Int Int)
-  modify $ \info -> info { curDepth = depth + 1 }
-
-updateAccInfo :: (StdReq q m g acc) => acc -> BuildState q m g sp acc ()
-updateAccInfo stepInfo = modify $ \info -> info { accInfo = accInfo info `mappend` stepInfo }
 
 class SpOp sp where
-  copeSp :: (StdReq q m g acc) => sp q m g -> BuildState q m g sp acc ()
+  copeSp :: (StdReq q m g sp acc) => sp q m g -> BuildState q m g sp acc ()
 
 -- Some Standard Separate Special Operators
 
 instance SpOp SpUnit where
-  copeSp :: StdReq q m g acc => SpUnit q m g -> BuildState q m g SpUnit acc ()
+  copeSp :: StdReq q m g SpUnit acc => SpUnit q m g -> BuildState q m g SpUnit acc ()
   copeSp _ = return ()
 
 instance SpOp SpTer where
-  copeSp :: StdReq q m g acc => SpTer q m g -> BuildState q m g SpTer acc ()
-  copeSp _ = whenM (gets $ null . curD) $ dispatchUpwardCompute Nothing
+  copeSp :: StdReq q m g SpTer acc => SpTer q m g -> BuildState q m g SpTer acc ()
+  copeSp _ = whenM (asks $ null . curD) $ dispatchUpwardCompute Nothing
 
 instance SpOp SpHorizontal where
-  copeSp :: StdReq q m g acc =>
+  copeSp :: StdReq q m g SpHorizontal acc =>
     SpHorizontal q m g -> BuildState q m g SpHorizontal acc ()
-  copeSp (SpHor q') = do
-    modify $ \info -> info { curState = q' }
+  copeSp (SpHor q') = flip local traverseAndBuild $ \info -> info { curState = q' }
 
 
 -- --------------------------- The Building Functions ---------------------------
 
-traverseAndBuild :: (SpOp sp, StdReq q m g acc) =>
+traverseAndBuild :: (StdReq q m g sp acc) =>
   BuildState q m g sp acc ()
 traverseAndBuild = do {
-  status <- gets curStatus;
-  rulesMap <- asks rules;
+  status <- asks curStatus;
+  rulesMap <- asksCtx rules;
   rules <- liftIO $ fromMaybe [] <$> HT.lookup rulesMap status;
   -- Report Stuck if required
-  whenM (asks ((null rules &&) . reportStuck . flags)) $
+  whenM (asksCtx ((null rules &&) . reportStuck . flags)) $
     liftIO $ print $ BMsgStuckStat status;
   -- Traverse for each rule
   forM_ rules $ \(stepInfo, op) -> do {
-    logAndAddDepth;
-    updateAccInfo stepInfo;
+    reportRuleInfo stepInfo op;
+    logDepth;
+    local (addDepthAndUpdateAccInfo stepInfo) $
     case op of
       OpUp q m g -> copeUp q m g
       OpDown q m -> copeDown q m
       OpSp sp    -> copeSp sp
   }
-}
+} where
+  reportRuleInfo stepInfo op = do
+    status <- asks curStatus
+    curD <- asks curD
+    liftIO $ putStrLn $ unwords
+      [ "Current D:"
+      , quoteBy "[]" $ printLstContent curD
+      , ". Exploring:"
+      , show status
+      , "-(" ++ show stepInfo ++ ")->"
+      , show op ]
+  addDepthAndUpdateAccInfo stepInfo info = info
+    -- update depth
+    { curDepth = curDepth info + 1
+    -- update `accInfo`
+    , accInfo = accInfo info `mappend` stepInfo }
+
+-- logAndAddDepth :: BuildState q m g sp acc ()
+-- logAndAddDepth = do
+--   depth <- asks curDepth
+--   -- liftIO $ print (BMsgDepth depth :: BuildMessage Int Int Int)
+--   modify $ \info -> info { curDepth = depth + 1 }
+
+-- updateAccInfo :: (StdReq q m g sp acc) => acc -> BuildState q m g sp acc ()
+-- updateAccInfo stepInfo = modify $ \info -> info { accInfo = accInfo info `mappend` stepInfo }
 
 
 recordUpdate :: [UpNodeVar q g] -> BuildState q m g sp acc ()
 recordUpdate upNodesVars = do
-  acc <- gets accInfo
+  acc <- asks accInfo
   let newInSynComp = InSynComp acc $ fmap toAbsVar upNodesVars
-  rhsCell <- asks curEqRHS
+  rhsCell <- asksCtx curEqRHS
   liftIO $ modifyRef rhsCell (newInSynComp:)
 
 
-dispatchUpwardCompute :: (Ord g, SpOp sp, StdReq q m g acc) =>
+dispatchUpwardCompute :: (Ord g, SpOp sp, StdReq q m g sp acc) =>
   Maybe (UpNodeVar q g)
   -> BuildState q m g sp acc ()
 dispatchUpwardCompute maybeNewUpVar = do
   -- the list of up variables in the up map with the `maybeNewUpVar` for the target direction
-  upNodesVars <- fmap (toUpNodeVar maybeNewUpVar) . M.toList <$> gets upRevMap
+  upNodesVars <- asks $ (fmap (toUpNodeVar maybeNewUpVar) . M.toList) . upRevMap
+  liftIO $ putStrLn $ unwords
+    [ "Start Upward Dispatch for vars:"
+    , quoteBy "[]" $ printLstContent upNodesVars ]
   -- iterate to check if they are all non-zero
   forM_ upNodesVars checkNonZeroVar
   -- update the current RHS with the new RHS
@@ -388,17 +418,26 @@ toUpNodeVar maybeNewUpVar (g, (revD, lenD)) =
     -- It is never possible to get up to GBot
     Just v@(UpNodeVar _ _ g') -> if g == g' then v else var
 
-checkNonZeroVar :: (SpOp sp, StdReq q m g acc) =>
+checkNonZeroVar :: (SpOp sp, StdReq q m g sp acc) =>
   UpNodeVar q g -> BuildState q m g sp acc ()
 checkNonZeroVar var = do
+  liftIO $ putStrLn $ "Checking var: " ++ show var
   var <- return $ toAbsVar var
-  res <- lift $ buildVarAndDependentVars var
+  res <- buildThisVar var
   case res of
-    BRStructuralZero -> throwError $ EVarMark var
-    _otherwise       -> return ()
+    BRStructuralZero -> do
+      liftIO $ putStrLn $ "Found ZERO var: " ++ show var
+      throwError $ EVarMark var
+    _otherwise       -> do
+      liftIO $ putStrLn $ "Non-ZERO var: " ++ show var
+      return ()
+  where
+    buildThisVar var = do
+      ctx <- asks ctx
+      liftIO $ runReaderT (buildVarAndDependentVars var) ctx
 
 
-copeUp :: (SpOp sp, StdReq q m g acc) =>
+copeUp :: (SpOp sp, StdReq q m g sp acc) =>
   q -> m -> g -> BuildState q m g sp acc ()
 copeUp uq nm tg = do
   trySingularUp uq tg
@@ -410,13 +449,13 @@ okForSingularUpVar :: (Ord g, Eq q, Hashable q, Hashable g) =>
 okForSingularUpVar tgVar@(UpNodeVar tgLen _ tg) = do
   foldM (\x y -> do y <- y; return $ x && y) True
     -- the actual conditions
-    [ null <$> gets curD  -- D == []
-    , asks $ not . noUpVar . flags  -- NOT `noUpVar`
+    [ asks $ null . curD  -- D == []
+    , asksCtx $ not . noUpVar . flags  -- NOT `noUpVar`
     , notLoggedVaccumVar $ toAbsVar tgVar  -- NOT already computed variable which has shown to be empty
     , notOverK tgLen tg ]
 
 
-trySingularUp :: (SpOp sp, StdReq q m g acc) =>
+trySingularUp :: StdReq q m g sp acc =>
   q -> g -> BuildState q m g sp acc ()
 trySingularUp uq tg = do
   -- vars intialisations
@@ -429,19 +468,21 @@ trySingularUp uq tg = do
   whenM (okForSingularUpVar tgVar) $ do
 
     -- notify `up` going to direction `tg`
-    modify $ \info -> info { accInfo = mappendUpMark (accInfo info) tg }
+    local (\info -> info
+      { accInfo = mappendUpMark (accInfo info) tg }) $
+      -- The actual work to do -- to dispatch and to log the vaccum vars
+      catchPossibleVaccumVar absVar hashCode $
+        -- the `catch` body
+        dispatchUpwardCompute $ Just tgVar
 
-    -- The actual work to do -- to dispatch and to log the vaccum vars
-    -- the `catch` body
-    catchPossibleVaccumVar absVar hashCode $
-      dispatchUpwardCompute $ Just tgVar
 
-
-tryUpThenDown :: (SpOp sp, StdReq q m g acc) =>
+tryUpThenDown :: StdReq q m g sp acc =>
   q -> m -> g -> BuildState q m g sp acc ()
 tryUpThenDown uq nm tg = do
   -- vars initialisation
   downs <- possibleDowns uq tg
+  liftIO $ putStrLn $
+    "Predicted downs for " ++ show (uq, tg) ++ ": " ++ quoteBy "[]" (printLstContent downs)
   -- `qc` for `q`-continue
   forM_ downs $ \qc -> do
     (RevList revTgDLst, tgLenD) <- getUpRevD tg
@@ -451,43 +492,47 @@ tryUpThenDown uq nm tg = do
         hashCode = hash tgVar
 
     -- When it is OK, continue traversing by the predicted `qc`
-    whenM ((&&) <$> notLoggedVaccumVar tgVar <*> notOverK tgLenD tg) $ do
+    notOverK <- notOverK tgLenD tg
+    notLoggedVaccumVar <- notLoggedVaccumVar tgVar
+    when (notLoggedVaccumVar && notOverK) $ do
 
-      -- update the `info` with new `upRevMap`
-      remapRevUpMap tg (newRevTgD, newTgLenD)
-      -- update `q` and `m`
-      modify $ \info -> info { curState = qc, curLocMem = nm }
-      -- continue traversing
-      catchPossibleVaccumVar tgVar hashCode traverseAndBuild
+      local (\info -> info
+        -- update the `info` with new `upRevMap`
+        { upRevMap = M.insert tg (newRevTgD, newTgLenD) $ upRevMap info
+        -- notify `up` going to direction `tg`
+        , accInfo = mappendUpMark (accInfo info) tg
+        -- update `q` and `m`
+        , curState = qc
+        , curLocMem = nm }) $
+        -- continue traversing with the updated `info`
+        catchPossibleVaccumVar tgVar hashCode traverseAndBuild
 
 
-copeDown :: (SpOp sp, StdReq q m g acc) =>
+copeDown :: (SpOp sp, StdReq q m g sp acc) =>
   q -> m -> BuildState q m g sp acc ()
-copeDown q m' = gets curD >>= internalCopeDown q m'
+copeDown q m' = asks curD >>= internalCopeDown q m'
   where
     internalCopeDown q nm dLst
       | null dLst = do
-        curGamma <- gets curGamma
+        curGamma <- asks curGamma
         -- To get `down` from bottom is equivalent to termination
         when (isBot curGamma) $ dispatchUpwardCompute Nothing
       | head dLst == q = case tail dLst of
         [] -> dispatchUpwardCompute Nothing
-        nq : nD -> do {
-          -- execute `notifyDown`
-          modify $ \info -> info { accInfo = mappendDownMark $ accInfo info };
-          -- update q m D
-          modify $ \info -> info
-            { curState = nq
+        nq : nD ->
+          -- continue traversing from the updated information
+          flip local traverseAndBuild $ \info -> info
+            -- execute `notifyDown`
+            { accInfo = mappendDownMark $ accInfo info
+            -- update q m D
+            , curState = nq
             , curLocMem = nm
-            , curD = nD };
-          -- continue traversing from the current information
-          traverseAndBuild
-        }
+            , curD = nD }
       | otherwise = return ()
 
 -- | build the variable and dependent variables
 buildVarAndDependentVars ::
-  (SpOp sp, StdReq q m g acc) =>
+  (SpOp sp, StdReq q m g sp acc) =>
   AbsVar q g -> CtxState q m g sp acc BuildResult
 buildVarAndDependentVars var = asks buildMode >>= \case
   BMDeepFirst pathSet envStk -> dfsBuildVar var pathSet envStk
@@ -539,28 +584,32 @@ reTravBuildVar var explored todo = findCache var >>= \case
 saveAndRecoverCurRHS ::
   Stack (AbsVar q g, [InSynComp q g acc])
   -> ContT BuildResult (CtxState q m g sp acc) ()
-saveAndRecoverCurRHS envStk = shiftT $ \rest -> do {
-  -- get the cell / pointer
-  rhsCell <- asks curEqRHS;
-  -- get the RHS from cell and save
-  curRHS <- liftIO $ readRef rhsCell;
-  ~(Just (var, _)) <- liftIO $ S.pop envStk;
-  liftIO $ S.push envStk (var, curRHS);
-  -- liftIO $ modifyRef envStk $ \ ~((var, _) : lst) -> (var, curRHS) : lst;
+saveAndRecoverCurRHS envStk = do
+  -- DEBUG: at the beginning, the `envStk` is empty, when there is no need to save current RHS
+  isEntry <- liftIO $ S.isEmpty envStk
+  if isEntry then return ()
+  else shiftT $ \rest -> do {
+    -- get the cell / pointer
+    rhsCell <- asks curEqRHS;
+    -- get the RHS from cell and save
+    curRHS <- liftIO $ readRef rhsCell;
+    ~(Just (var, _)) <- liftIO $ S.pop envStk;
+    liftIO $ S.push envStk (var, curRHS);
+    -- liftIO $ modifyRef envStk $ \ ~((var, _) : lst) -> (var, curRHS) : lst;
 
-  -- get the return value
-  r <- lift $ rest ();
+    -- get the return value
+    r <- lift $ rest ();
 
-  -- write the RHS back to the cell
-  ~(Just (_, preRHS)) <- liftIO $ S.top envStk;
-  liftIO $ rhsCell <<- preRHS;
+    -- write the RHS back to the cell
+    ~(Just (_, preRHS)) <- liftIO $ S.top envStk;
+    liftIO $ rhsCell <<- preRHS;
 
-  -- actually return the value
-  return r
-}
+    -- actually return the value
+    return r
+  }
 
 
-dfsBuildVar :: (Ord g, SpOp sp, StdReq q m g acc) =>
+dfsBuildVar :: (Ord g, SpOp sp, StdReq q m g sp acc) =>
   AbsVar q g
   -> HashSet (AbsVar q g)
   -> Stack (AbsVar q g, [InSynComp q g acc])
@@ -607,7 +656,7 @@ addToCache var res = do
 --   to the result
 --  
 --   returns whether it is Structurally Zero
-buildVar :: (SpOp sp, StdReq q m g acc) =>
+buildVar :: (SpOp sp, StdReq q m g sp acc) =>
   AbsVar q g -> CtxState q m g sp acc Bool
 buildVar var = do
   logNewVar var
@@ -615,16 +664,28 @@ buildVar var = do
   -- Refresh the RHS cell
   rhsCell <- asks curEqRHS
   liftIO $ rhsCell <<- []
+
   -- Traverse and build, which accumulates results to the `rhsCell`
-  evalStateT traverseAndBuild initInfo
+  res <- liftIO $ runExceptT $ runReaderT traverseAndBuild initInfo
+  when (isLeft res) $
+    error $
+      "INTERNAL ERROR: Exception " ++
+      show res ++
+      "thrown from traverseAndBuild."
+
   -- Get the RHS and then append the equation of `var` to the result
-  rhs <- liftIO $ readRef rhsCell
+  !rhs <- liftIO $ readRef rhsCell
   resCell <- asks results
+  debugPrint var rhs
+
   whenM (okToAppendToResult rhs) $ liftIO $ modifyRef resCell ((var, rhs):)
-  return $ not $ null rhs
+  return $ null rhs
+
   where
     okToAppendToResult rhs =
       asks ((not (null rhs) ||) . (recordAlsoFoundZeroVar . flags))
+    debugPrint var rhs = do
+      liftIO $ putStrLn ("Constructed: " ++ show var ++ " = " ++ show rhs)
 
 -- | Do some logging jobs
 logNewVar :: (Show q, Show g) => AbsVar q g -> CtxState q m g sp acc ()
@@ -636,10 +697,11 @@ logNewVar var = do
   liftIO $ modifyRef countCell (+1)
 
 
-genInitInfo :: (StdReq q m g acc) =>
-  AbsVar q g -> CtxState q m g sp acc (BuildInfo q m g acc)
+genInitInfo :: (StdReq q m g sp acc) =>
+  AbsVar q g -> CtxState q m g sp acc (BuildInfo q m g sp acc)
 genInitInfo (AbsVar _ ~(q1:dLst) g) = do
   m0 <- asks defLocMem
+  ctx <- ask
   let initAcc = mempty
   return $ BuildInfo
     { curState = q1
@@ -648,10 +710,11 @@ genInitInfo (AbsVar _ ~(q1:dLst) g) = do
     , curDepth = 0
     , curD = dLst
     , accInfo = initAcc
-    , upRevMap = M.empty }
+    , upRevMap = M.empty
+    , ctx = ctx }
 
 
-initReTravBuildVar :: (SpOp sp, StdReq q m g acc) =>AbsVar q g
+initReTravBuildVar :: (SpOp sp, StdReq q m g sp acc) =>AbsVar q g
   -> HashSet (AbsVar q g)
   -> Queue (AbsVar q g)
   -> CtxState q m g sp acc BuildResult
@@ -662,7 +725,7 @@ initReTravBuildVar initVar explored todo = do
     fromMaybe BRReTravUnencountered <$> findCache var
 
 
-initBfsBuildVar :: (SpOp sp, StdReq q m g acc) =>
+initBfsBuildVar :: (SpOp sp, StdReq q m g sp acc) =>
   AbsVar q g
   -> Queue (AbsVar q g)
   -> CtxState q m g sp acc BuildResult
@@ -693,7 +756,7 @@ buildWithTodo var todo actualCompute = do
 
 -- | The start point of the construction procedure, accepting the target x0 variable
 entryBuildVarAndDependentVars ::
-  (SpOp sp, StdReq q m g acc) =>
+  (SpOp sp, StdReq q m g sp acc) =>
   AbsVar q g -> CtxState q m g sp acc BuildResult
 entryBuildVarAndDependentVars var = asks buildMode >>= \case
   BMDeepFirst pathSet envStk -> dfsBuildVar var pathSet envStk
@@ -762,7 +825,7 @@ consBreathFsMode = do
 - Has `Up` Variables
 -}
 defGetBuildContext ::
-  (StdReq q m g acc, Ord q) =>
+  (StdReq q m g sp acc, Ord q) =>
   ExtendedRTSA q m g acc sp
   -> IO (BuildContext q m g sp acc)
 defGetBuildContext eRtsa = do
@@ -801,34 +864,53 @@ x0Of rtsa = AbsVar 1 [rtsaInitSt rtsa] GBot
 
 newtype SynComp v acc = SynComp (acc, [v])
 
+instance (Show v, Show acc) => Show (SynComp v acc) where
+  show :: (Show v, Show acc) => SynComp v acc -> String
+  show (SynComp (acc, vs)) = unwords
+    [ show acc
+    , "*"
+    , quoteBy "[]" $ printLstContent vs ]
+
 newtype EqSys v acc = EqSys [(v, [SynComp v acc])]
+
+instance (Show v, Show acc) => Show (EqSys v acc) where
+  show :: (Show v, Show acc) => EqSys v acc -> String
+  show (EqSys lst) =
+    fmap printer lst
+    |> intercalate "\n"
+    |> addIndent 1 "  "
+    |> ("Equation System: {\n" ++)
+    |> (++ "}")
+    where
+      printer (v, comps) = unwords
+        [ show v
+        , "="
+        , "\n    " ++ intercalate "\n  + " (fmap show comps) ]
 
 internalSynCompToSynComp :: InSynComp q g acc -> SynComp (AbsVar q g) acc
 internalSynCompToSynComp (InSynComp acc vars) = SynComp (acc, vars)
 
-runConstruction :: (SpOp sp, StdReq q m g acc) =>
+runConstruction :: (SpOp sp, StdReq q m g sp acc) =>
   BuildContext q m g sp acc
   -> AbsVar q g
   -> IO (EqSys (AbsVar q g) acc)
 runConstruction ctx x0 = do
-  either <- runExceptT $ runReaderT (entryBuildVarAndDependentVars x0) ctx
-  case either of
-    Left be -> error $ show be
-    Right br -> case br of
-      BRNormal -> getResult ctx
-      BRStructuralZero -> return $ EqSys [(x0, [])]
-      BRDfsRecursive -> error "IMPOSSIBLE RESULT: Recursive should not appear as the final result."
-      BRBfsUnknown -> getResult ctx
-      BRBfsInQueue -> error "IMPOSSIBLE RESULT: In-queue should not appear as the final result."
-      BRReTravelNormal -> getResult ctx
-      BRReTravUnencountered -> error "Re-Travel Error: the Unencountered should not be for x0."
+  br <- runReaderT (entryBuildVarAndDependentVars x0) ctx
+  case br of
+    BRNormal -> getResult ctx
+    BRStructuralZero -> return $ EqSys [(x0, [])]
+    BRDfsRecursive -> error "IMPOSSIBLE RESULT: Recursive should not appear as the final result."
+    BRBfsUnknown -> getResult ctx
+    BRBfsInQueue -> error "IMPOSSIBLE RESULT: In-queue should not appear as the final result."
+    BRReTravelNormal -> getResult ctx
+    BRReTravUnencountered -> error "Re-Travel Error: the Unencountered should not be for x0."
   where
     getResult ctx = do
       lst <- readRef $ results ctx
       return $ EqSys $ fmap (sndMap $ fmap internalSynCompToSynComp) lst
 
 constructEqSysFromX0 ::
-  (StdReq q m g acc, SpOp sp, Ord q) =>
+  (StdReq q m g sp acc, SpOp sp, Ord q) =>
   ExtendedRTSA q m g acc sp
   -> IO (EqSys (AbsVar q g) acc)
 constructEqSysFromX0 rtsa = do
