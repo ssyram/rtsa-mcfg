@@ -1,7 +1,7 @@
 {-# LANGUAGE Strict #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE TupleSections #-}
-module AutOp (FiniteStateAut(..), ReadFSA, GenFSA, Transducer, intersectReg, stringHomo) where
+module AutOp (FiniteStateAut(..), ReadFSA, GenFSA, Transducer, intersectReg, stringHomo, extIntersectReg, extStringHomo) where
 import Objects
 import qualified Data.Map as M
 import Control.Monad.Identity (Identity (runIdentity))
@@ -101,6 +101,24 @@ intersectReg rtsa fsa =
   , rtsaRestriction = rtsaRestriction rtsa
   , rtsaDefLocMem = rtsaDefLocMem rtsa }
 
+-- | Simply distribute all possible `d` in the FSA to the DownMap
+extIntersectReg ::
+  (SpMapSt sp, Ord a, Ord b, Ord g, Ord t, Ord m, Ord (sp (a, b) m g)) =>
+  ExtendedRTSA a m g [t] sp
+  -> ReadFSA b t -> ExtendedRTSA (a, b) m g [t] sp
+extIntersectReg er fsa = ExtendedRTSA
+  { eRtsaKMap = eRtsaKMap er
+  , eRtsaDownMap = newDownMap fsa <$> eRtsaDownMap er
+  , eRtsaAutomaton=intersectReg (eRtsaAutomaton er) fsa }
+  where
+    newDownMap fsa map = toColMap $ do
+      d <- allD fsa
+      d' <- allD fsa
+      ((q, g), set) <- M.toList map
+      q' <- S.toList set
+      return (((q, d), g), (q', d'))
+
+
 rearrangeRules ::
   (Ord d, Ord t, SpMapSt sp) =>
   RestrictedTreeStackAut q m g [t] sp
@@ -120,6 +138,7 @@ rearrangeRules rtsa fsa = do
         OpSp sp -> OpSp <$> mapSt sp (,d')
   return (((q, d), m, g), (info, op'))
 
+-- | Guaranteed to be NO duplicate information
 allD :: Ord d => ReadFSA d t -> [d]
 allD fsa =
   allRulesD fsa
@@ -141,4 +160,12 @@ stringHomo ::
 stringHomo rtsa f = rtsa { rtsaRules = M.map (mapper f) $ rtsaRules rtsa }
   where mapper f = S.map (fstMap $ concatMap f)
 
-
+-- | Exactly the same as pure `stringHomo`.
+extStringHomo ::
+  (Ord b, Ord q, Ord m, Ord g, Ord (sp q m g)) =>
+  ExtendedRTSA q m g [a] sp
+  -> (a -> [b]) -> ExtendedRTSA q m g [b] sp
+extStringHomo er f = ExtendedRTSA
+  { eRtsaKMap = eRtsaKMap er
+  , eRtsaDownMap = eRtsaDownMap er
+  , eRtsaAutomaton = stringHomo (eRtsaAutomaton er) f }

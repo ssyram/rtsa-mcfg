@@ -20,14 +20,14 @@ module Examples (
   exampleMIX3
 ) where
 import Parser ()
-import Objects (mapMCFG, SpUnit (SpUnit), MultiCtxFreeGrammar, mapAut, RestrictedTreeStackAut, mapExtRtsa, ExtendedRTSA (..))
-import Utils (NString(NString), stAutoNumber)
+import Objects (mapMCFG, SpUnit (SpUnit), MultiCtxFreeGrammar (mcfgStartNonTer), mapAut, RestrictedTreeStackAut, mapExtRtsa, ExtendedRTSA (..), CheckValid (isValid))
+import Utils (NString(NString), stAutoNumber, ioAutoNumber)
 import GrammarToAut ( LocMem, StackSym, State, mcfgToRtsa )
 import Control.Monad.Identity (Identity(runIdentity, Identity))
 import Data.Hashable ( Hashable )
 import Control.Monad.ST.Strict ( ST, runST )
 import EqSysBuild.MultiCFG (rTSAToMultiCFG, NonTer, Var)
-import AutOp (FiniteStateAut(FiniteStateAut), ReadFSA, intersectReg, stringHomo)
+import AutOp (FiniteStateAut(FiniteStateAut), ReadFSA, extIntersectReg, extStringHomo)
 import qualified Data.Set as S
 import qualified Data.Map.Strict as M
 
@@ -433,15 +433,30 @@ st -| v = (st, v)
 p |-> st = (p, Identity st)
 
 -- >>> exampleMIX3
-exampleMIX3 :: IO (MultiCtxFreeGrammar (NonTer (Int, Int) Int) NString (Var Int))
+exampleMIX3 :: IO (MultiCtxFreeGrammar NString NString (Var Int))
 exampleMIX3 = do
   o2 <- mcfgToRtsa exampleO2
   o2 <- return $ runST $ numberExtRtsa (\_ _ _ _ -> return SpUnit) o2
-  let preMIX  = intersectReg (eRtsaAutomaton o2) pureABCLanguage
-      mix3Aut = stringHomo preMIX mapper
-  ret <- rTSAToMultiCFG $ ExtendedRTSA mix3Aut Nothing Nothing
-  mapMCFG return (return . NString . (:[])) return ret
+  let preMIX  = extIntersectReg o2 pureABCLanguage
+      mix3Aut = extStringHomo preMIX mapper
+  ret <- rTSAToMultiCFG mix3Aut
+  ntRename <- renameNt $ mcfgStartNonTer ret
+  ret <- mapMCFG ntRename (return . NString . (:[])) return ret
+  case isValid ret of
+    Left problem -> error problem
+    Right _ -> do
+      putStrLn "Check Passed: Is Valid MCFG."
+      return ret
   where
+    renameNt stNt = do
+      getId <- ioAutoNumber
+      _ :: Int <- getId stNt
+      return $ \nt -> do
+        id <- getId nt
+        return $ NString $ case id of
+          0 -> "S"
+          1 -> "F"
+          x -> "F" ++ show (x - 1)
     mapper = \case
       "a1" -> "A"
       "a2" -> "B"

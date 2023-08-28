@@ -20,7 +20,7 @@ import Utils (
   IMap (containsKey),
   foldToLogicT,
   addIndent,
-  printListMap, transMaybe)
+  printListMap, transMaybe, Modifiable (newRef, readRef), (<<-), whenM)
 import Data.List (intercalate)
 import Data.Hashable (Hashable)
 import GHC.Generics (Generic)
@@ -33,6 +33,8 @@ import qualified Data.Set as S
 import Data.Maybe (isJust, fromJust)
 import Control.Monad.Logic (observeAllT)
 import Control.Monad.Trans.Maybe (MaybeT(..))
+import qualified Data.HashTable.ST.Basic as HT
+import Control.Monad.ST.Class (MonadST(..))
 
 data Symbol t
   = STerminal t
@@ -183,15 +185,24 @@ instance (Ord nt, Show nt, Show t, Show v) =>
       let lhsDim = dimMap M.! nt
       rule@(Rule lhs rhs) <- foldToLogicT rules
       let rhsLen = length rhs
+      varStrSet <- liftST HT.new
       -- Check var bounds
       -- Use `forM_` here to iterate so to quench the effect
       -- reducing the re-computation of the stuff below this part
       forM_ lhs $ \(Term lst) -> do
         forM_ lst $ \case
-          STerminal _      -> return ()
-          SVar (ntId, vId) ->
+          STerminal _          -> return ()
+          (SVar p@(ntId, vId)) -> do
             when (ntId >= rhsLen || vId >= varsLen (rhs !! ntId)) $
               tellVarOutOfBoundError nt (ntId, vId)
+            let varStr = getVarStr p rhs
+            dup <- liftST $ newRef False
+            liftST $ HT.mutateST varStrSet varStr $ \case
+              Nothing -> return (return (), ())
+              Just _  -> do
+                dup <<- True
+                return (return (), ())
+            whenM (liftST $ readRef dup) $ tellPosReuseError (nt, rule) varStr
       -- Check LHS rule body
       when (length lhs /= lhsDim) $
         tellWrongDimError nt lhsDim (nt, rule) (length lhs)
@@ -201,6 +212,9 @@ instance (Ord nt, Show nt, Show t, Show v) =>
       when (length vars /= expDim) $
         tellWrongDimError rNt expDim (nt, rule) (length vars)
     where
+      getVarStr (ntId, vId) rhs =
+        let (LocVarDecl (_, vars)) = rhs !! ntId in
+        show $ vars !! vId
       varsLen (LocVarDecl (_, vars)) = length vars
       tellVarOutOfBoundError nt pair =
         throwError $
@@ -230,6 +244,11 @@ instance (Ord nt, Show nt, Show t, Show v) =>
           "The non-terminal \"" ++
           show nt ++
           "\" has does not have rule."
+      tellPosReuseError (nt, rule) varStr =
+        throwError $
+          "In Rule: \"" ++ 
+          show nt ++ " " ++ show rule ++
+          "\", the variable \"" ++ varStr ++ "\" is used for multiple times."
 
 
 
