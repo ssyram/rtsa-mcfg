@@ -20,7 +20,15 @@ module Examples (
   exampleMIX3
 ) where
 import Parser ()
-import Objects (mapMCFG, SpUnit (SpUnit), MultiCtxFreeGrammar (mcfgStartNonTer, MultiCtxFreeGrammar), mapAut, RestrictedTreeStackAut, mapExtRtsa, ExtendedRTSA (..), CheckValid (isValid))
+import Objects
+    ( SpUnit(..),
+      ExtendedRTSA(eRtsaKMap, eRtsaDownMap),
+      RestrictedTreeStackAut,
+      CheckValid(isValid),
+      MultiCtxFreeGrammar(mcfgStartNonTer),
+      mapMCFG,
+      mapAut,
+      mapExtRtsa )
 import Utils (NString(NString), stAutoNumber, ioAutoNumber, quoteBy)
 import GrammarToAut ( LocMem, StackSym, State, mcfgToRtsa )
 import Control.Monad.Identity (Identity(runIdentity, Identity))

@@ -27,7 +27,6 @@ import Data.HashTable.IO (IOHashTable)
 import Control.Monad.Cont (MonadCont (callCC), MonadIO (liftIO))
 import Control.Monad.Trans.Cont (evalContT)
 import Control.Monad.Logic (LogicT(LogicT))
-import qualified Data.List as List
 import qualified Data.Set as S
 import GHC.Generics (Generic)
 import qualified Data.HashTable.ST.Basic as HTST
