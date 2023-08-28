@@ -33,6 +33,7 @@ dependencies:
 - transformers
 - logict
 - mono-traversable
+- union-find
 - mut-data
 
 ghc-options:

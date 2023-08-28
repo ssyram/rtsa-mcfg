@@ -257,6 +257,8 @@ instance (Show q, Show m, Show g, Show (sp q m g)) =>
     , "Down" ]
   show (OpSp spqmg) = show spqmg
 
+-- >>> GNorm 1 <= GBot
+-- False
 data Gamma g
   = GBot
   | GNorm g

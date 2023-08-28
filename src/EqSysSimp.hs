@@ -1,20 +1,40 @@
 {-# LANGUAGE Strict #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE LambdaCase #-}
-module EqSysSimp (substConstant, removeSimpleEmptyVars, removeRecurEmptyVar, removeEmptyVars) where
+{-# LANGUAGE TypeFamilies #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
+module EqSysSimp (
+  substConstant,
+  removeSimpleEmptyVars,
+  removeRecurEmptyVar,
+  removeEmptyVars,
+  NormPoly(..),
+  NormEqSys(..),
+  toNormPoly,
+  toNormEqSys,
+  fromNormPoly,
+  fromNormEqSys,
+  removeDuplicatedVars,
+  substVar,
+  substCompVar,
+  collectDuplicateInfo
+) where
 import EqSysBuild (EqSys (..), SynComp (SynComp))
-import qualified Data.HashTable.Class as HT (toList)
+import qualified Data.HashTable.Class as HT (toList, fromList)
 import qualified Data.HashTable.ST.Basic as HT
 import Control.Monad.ST (runST, ST)
-import Utils (Modifiable(newRef, readRef), whileM, (<<-), sndMapM, anyM, (|>), RevList (RevList), revToList, sndMap, quoteBy, printLstContent)
+import Utils (Modifiable(newRef, readRef), whileM, (<<-), sndMapM, anyM, (|>), RevList (RevList), revToList, sndMap, quoteBy, printLstContent, toLogicT)
 import qualified Data.List as List
 import Data.Hashable
-import Control.Monad (forM_, filterM, forM, foldM)
+import Control.Monad (forM_, filterM, forM, foldM, guard)
 import Data.Maybe (isJust, fromJust)
 import qualified Data.Map.Strict as M
 import Control.Monad.ST.Class (MonadST (liftST))
 import EqSysIter (iterEqSys)
 import Debug.Trace (trace)
+import Control.Monad.Logic (observeAllT)
+import qualified Data.UnionFind.ST as UF
+import GHC.Generics (Generic)
 
 -- Old specific version
 
@@ -217,3 +237,146 @@ modifyRHS constMap rhs = forM rhs $ \(SynComp (acc, vars)) -> do
     folder constMap (acc, rVars@(RevList rvLst)) var = HT.lookup constMap var >>= \case
        Nothing -> return (acc, RevList $ var : rvLst)
        Just cV -> return (acc <> cV, rVars)
+
+-- | The normalised formula
+newtype NormPoly v c = NormPoly (M.Map (M.Map v Int) c)
+  deriving (Eq, Ord, Generic, Hashable)
+
+-- | The normalised EqSys
+newtype NormEqSys v c = NormEqSys [(v, NormPoly v c)]
+  deriving (Eq, Ord, Generic, Hashable)
+
+instance (Show v, Show c) => Show (NormEqSys v c) where
+  show :: (Show v, Show c) => NormEqSys v c -> String
+  show = show . fromNormEqSys
+
+toNormPoly :: (Ord k, Num c) => [SynComp k c] -> NormPoly k c
+toNormPoly lst =
+  fmap mapper lst
+  |> M.fromListWith (*)
+  |> NormPoly
+  -- Form the map of variables with counts
+  where mapper (SynComp (c, vs)) = (M.fromListWith (+) $ map (,1) vs, c)
+
+fromNormPoly :: NormPoly v a -> [SynComp v a]
+fromNormPoly (NormPoly map) =
+  M.toList map
+  |> fmap mapper
+  where
+    mapper (map, c) = SynComp (c, reEnum map)
+    reEnum map =
+      M.toList map
+      |> concatMap smooth
+    smooth (v, count) = replicate count v
+
+toNormEqSys :: (Ord v, Num c) => EqSys v c -> NormEqSys v c
+toNormEqSys (EqSys lst) = NormEqSys $ fmap (sndMap toNormPoly) lst
+
+fromNormEqSys :: NormEqSys v acc -> EqSys v acc
+fromNormEqSys (NormEqSys lst) = EqSys $ fmap (sndMap fromNormPoly) lst
+
+-- | Substitute the variables in a given equation system with a given function.
+substVar :: (Monad m, Num c) => EqSys v c -> (v -> m (Either c v)) -> m (EqSys v c)
+substVar (EqSys lst) f = EqSys <$> mapM (mapper f) lst
+  where
+    mapper f (v, comp) = do
+      comp <- mapM (substCompVar f) comp
+      return (v, comp)
+
+substCompVar :: (Monad f, Num acc) =>
+  (a -> f (Either acc v)) -> SynComp a acc -> f (SynComp v acc)
+substCompVar f (SynComp (c, vs)) = SynComp <$> foldM (folder f) (c, []) vs
+  where folder f (c, lst) v = f v >>= \case
+          Left c'  -> return (c * c', lst)
+          Right v' -> return (c, v' : lst)
+
+
+
+{-| Remove the variables with the same RHS.
+
+For those equivalent variables, only the variable with the LEAST order is maintained.
+
+Examples:
+- Given an equation system:
+
+> x = xy
+> y = xy
+
+- After performing `removeDuplicatedVars`, one obtains:
+
+> x = xx
+-}
+removeDuplicatedVars :: (Num acc, Hashable v, Hashable acc, Ord v) =>
+  EqSys v acc -> EqSys v acc
+removeDuplicatedVars eqSys@(EqSys lst) = runST $ do
+  -- First just collect the information of the union-find sets
+  varTab <- collectDuplicateInfo norm eqSys
+
+  -- Core job: filter and map the result
+  --           use the `LogicT` to realise the effect of `List` Monad
+  lst <- observeAllT $ do
+    (v, comps) <- toLogicT lst
+    ~(Just p) <- liftST $ HT.lookup varTab v
+    rep <- liftST $ UF.descriptor p
+    guard $ rep == v  -- otherwise, it should be replaced by the other
+    comps <- forM comps $ substCompVar $ subst varTab
+    return (v, comps)
+    
+  -- Return the result
+  return $ EqSys lst
+  
+  where
+
+    norm eqSys =
+      let (NormEqSys normLst) = toNormEqSys eqSys in
+      return normLst
+
+    subst varTab v = liftST $ do
+      p <- fromJust <$> HT.lookup varTab v
+      v <- UF.descriptor p
+      return $ Right v
+      
+
+-- | Given an equation system, collect the map of
+--   variables with the corresponding union-find set.
+--   The `descriptor` of the union-find sets are the variables with the LEAST order
+--   The pre-processing component of `removeDuplicatedVars`.
+--   Provided the `normalise` function to normalise the whole equation system so that the RHS
+--   has a UNIQUE representation.
+--   The correctness of the function will be affected by the `normalise` function
+collectDuplicateInfo :: (Foldable t, Hashable a, Hashable k, Ord a) =>
+  (EqSys a acc -> ST s (t (a, k)))
+  -> EqSys a acc -> ST s (HT.HashTable s a (UF.Point s a))
+collectDuplicateInfo normalise eqSys@(EqSys lst) = do
+  varTab <- initVarTab lst
+  polyTab <- HT.new
+  normLst <- normalise eqSys
+
+  forM_ normLst $ \(v, normPoly) -> HT.mutateST polyTab normPoly $ \case
+
+    -- Create a new polynomial mapping with the point of the current `v`
+    Nothing -> do
+      ~(Just p) <- HT.lookup varTab v
+      return (Just p, ())
+
+    -- Merge the two polynomials, use the one with less order as the `descriptor`
+    Just op -> do
+      ~(Just p) <- HT.lookup varTab v
+      odv <- UF.descriptor op
+      dv  <- UF.descriptor p
+      let (pMin, pMax) = if odv <= dv then (op, p) else (p, op)
+      pMax `UF.union` pMin
+      return (Just p, ())
+    
+  return varTab
+
+
+  where
+
+    initVarTab lst = do
+      lst <- mapM mapper lst
+      HT.fromList lst
+
+    mapper (v, _) = do
+      p <- UF.fresh v
+      return (v, p)

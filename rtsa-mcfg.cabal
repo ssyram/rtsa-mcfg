@@ -38,6 +38,7 @@ library
       GrammarToAut
       Objects
       Parser
+      Test
       Utils
   other-modules:
       Paths_rtsa_mcfg
@@ -59,6 +60,7 @@ library
     , mut-data
     , parsec
     , transformers
+    , union-find
   default-language: Haskell2010
 
 executable rtsa-mcfg-exe
@@ -84,6 +86,7 @@ executable rtsa-mcfg-exe
     , parsec
     , rtsa-mcfg
     , transformers
+    , union-find
   default-language: Haskell2010
 
 test-suite rtsa-mcfg-test
@@ -110,4 +113,5 @@ test-suite rtsa-mcfg-test
     , parsec
     , rtsa-mcfg
     , transformers
+    , union-find
   default-language: Haskell2010

@@ -55,6 +55,18 @@ type Transducer q i o = FiniteStateAut q i ((,) o)
 class SpMapSt sp where
   mapSt :: sp q m g -> (q -> q') -> Maybe (sp q' m g)
 
+instance SpMapSt SpUnit where
+  mapSt :: SpUnit q m g -> (q -> q') -> Maybe (SpUnit q' m g)
+  mapSt _ _ = Just SpUnit
+
+instance SpMapSt SpTer where
+  mapSt :: SpTer q m g -> (q -> q') -> Maybe (SpTer q' m g)
+  mapSt _ _ = Just SpTer
+
+instance SpMapSt SpHorizontal where
+  mapSt :: SpHorizontal q m g -> (q -> q') -> Maybe (SpHorizontal q' m g)
+  mapSt (SpHor q) mapper = Just $ SpHor $ mapper q
+
 -- | Given an initial state, what is the possible target state after reading a given string
 traceString :: (Foldable f, Ord q, Ord t) => ReadFSA q t -> q -> f t -> Maybe q
 traceString fsa stQ = foldl (combine fsa) $ Just stQ

@@ -240,46 +240,31 @@ toLogicT = foldToLogicT
 
 newtype Flip f a b = Flip { getFlip :: f b a }
 
-class Collection t a | t -> a where
+-- | The class of addable collection accepts the whole collection and the element
+class AddCol t a | t -> a where
   empty :: t
   addOne :: t -> a -> t
-  removeOne :: Eq a => t -> a -> t
-  addAll :: Foldable f => t -> f a -> t
-  addAll = foldl addOne
-  removeAll :: (Foldable f, Eq a) => t -> f a -> t
-  removeAll = foldl removeOne
-  cFoldl :: (b -> a -> b) -> b -> t -> b
-  ofList :: [a] -> t
-  ofList = addAll empty
-  toList :: t -> [a]
 
-instance Collection [a] a where
+instance AddCol [a] a where
   empty :: [a]
   empty = []
   addOne :: [a] -> a -> [a]
   addOne = flip (:)
-  removeOne :: Eq a => [a] -> a -> [a]
-  removeOne = flip List.delete
-  cFoldl :: (b -> a -> b) -> b -> [a] -> b
-  cFoldl = foldl
-  toList :: [a] -> [a]
-  toList = id
 
-instance (Ord a) => Collection (S.Set a) a where
+instance (Ord a) => AddCol (S.Set a) a where
   empty = S.empty
   addOne = flip S.insert
-  removeOne = flip S.delete
-  cFoldl = S.foldl
-  toList = S.toList
 
-instance (Ord k) => Collection (M.Map k v) (k, v) where
+instance (Ord k) => AddCol (M.Map k v) (k, v) where
   empty = M.empty
   addOne m (k, v) = M.insert k v m
-  removeOne m (k, _) = M.delete k m
-  cFoldl f = M.foldlWithKey $ \b k v -> f b (k, v)
-  toList = M.toList
 
-toColMap :: (Foldable f, Collection t v, Ord k) => f (k, v) -> M.Map k t
+-- | Given a collection of (k, v) pairs, form a map M.Map k (t v) where `t` is a suitable collection
+-- >>> toColMap [(1, 2), (1, 5), (2, 3), (1, 7), (2, 9)] :: M.Map Int (S.Set Int)
+-- fromList [(1,fromList [2,5,7]),(2,fromList [3,9])]
+-- >>> toColMap [(1, 2), (1, 5), (2, 3), (1, 7), (2, 9)] :: M.Map Int [Int]
+-- fromList [(1,[7,5,2]),(2,[9,3])]
+toColMap :: (Foldable f, AddCol t v, Ord k) => f (k, v) -> M.Map k t
 toColMap = foldl foldFunc M.empty
   where
     adder v = \case

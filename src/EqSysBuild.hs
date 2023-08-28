@@ -72,10 +72,19 @@ asksCtx f = asks $ f . ctx
 
 -- | The abstract variable, of information `length`, `D` and `gamma`
 data AbsVar q g = AbsVar Int [q] (Gamma g)
-  deriving (Show, Eq, Ord, Generic, Hashable)
+  deriving (Show, Eq, Generic, Hashable)
 -- | Not possible to go for `GBot`, special version of `AbsVar`
 data UpNodeVar q g = UpNodeVar Int [q] g
-  deriving (Show, Eq, Ord, Generic, Hashable)
+  deriving (Show, Eq, Generic, Hashable)
+
+instance (Ord q, Ord g) => Ord (AbsVar q g) where
+  (<=) :: (Ord q, Ord g) => AbsVar q g -> AbsVar q g -> Bool
+  (AbsVar len1 l1 g1) <= (AbsVar len2 l2 g2) =
+    g1 <= g2 && len1 <= len2 && l1 <= l2
+instance (Ord q, Ord g) => Ord (UpNodeVar q g) where
+  (<=) :: (Ord q, Ord g) => UpNodeVar q g -> UpNodeVar q g -> Bool
+  (UpNodeVar len1 l1 g1) <= (UpNodeVar len2 l2 g2) =
+    g1 <= g2 && len1 <= len2 && l1 <= l2
 
 toAbsVar :: UpNodeVar q g -> AbsVar q g
 toAbsVar (UpNodeVar n qs g) = AbsVar n qs $ GNorm g

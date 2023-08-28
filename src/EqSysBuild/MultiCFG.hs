@@ -19,28 +19,31 @@ module EqSysBuild.MultiCFG (
   rTSAToMultiCFG
 ) where
 import Objects (RestrictedTreeStackAut, Gamma (GNorm), Symbol (SVar, STerminal), mapInfo, MultiCtxFreeGrammar (MultiCtxFreeGrammar), Rule (Rule), Term (Term), LocVarDecl (LocVarDecl), ExtendedRTSA (eRtsaAutomaton))
-import Utils (RevList (..), revToList, toRevList, (|>), Modifiable (newRef, readRef, modifyRef))
+import Utils (RevList (..), revToList, toRevList, (|>), Modifiable (newRef, readRef, modifyRef), sndMap, toLogicT, toColMap, stAutoCallCount)
 import EqSysBuild (AccStepInfo (..), StdReq, EqSys (..), AbsVar (AbsVar), SynComp (SynComp), x0Of, defGetBuildContext, runConstruction, BuildContext (flags), Flags (noUpVar))
-import EqSysSimp (removeEmptyVars)
+import EqSysSimp (removeEmptyVars, removeDuplicatedVars, collectDuplicateInfo)
 import qualified Data.Map.Strict as M
 import Control.Monad.ST (runST, ST)
 import qualified Data.HashTable.ST.Basic as HT
 import Data.Hashable ( Hashable )
 import Data.HashTable.ST.Basic (HashTable)
-import Control.Monad.Cont (forM_)
+import Control.Monad.Cont (forM_, guard, forM)
 import Data.STRef.Strict (STRef)
 import GHC.Generics (Generic)
 import Debug.Trace (trace)
+import qualified Data.Set as S
+import Control.Monad.Logic (observeAllT)
+import qualified Data.UnionFind.ST as UF
+import Control.Monad.ST.Class (MonadST(liftST))
+import qualified Data.HashTable.Class as HT (fromList)
 
 
 -- ------------------------------ Concepts Definition ------------------------------
 
 
 type NonTer q g = AbsVar q g
--- | Internal Var
-newtype InVar g = InVar g deriving (Eq, Ord, Show, Generic, Hashable)
 
-newtype Var g = Var (g, Int)
+newtype Var v = Var (v, Int)
 
 instance Show g => Show (Var g) where
   show :: Show g => Var g -> String
@@ -48,7 +51,7 @@ instance Show g => Show (Var g) where
 
 data InSym t g
   = ISTer t
-  | ISVar (InVar g)
+  | ISVar g
   deriving (Eq, Ord, Generic, Hashable, Show)
 
 type Sym t = Symbol t
@@ -61,9 +64,10 @@ type Sym t = Symbol t
 [[1,2],[3,4],[5,6,7,8],[9,10],[11,12]]
 -}
 newtype DRevList g = DRevList (RevList (RevList g))
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic, Hashable)
 
 instance Show g => Show (DRevList g) where
+  show :: Show g => DRevList g -> String
   show = show . revDoubleRevList
 
 revDoubleRevList :: DRevList a -> [[a]]
@@ -98,7 +102,7 @@ instance AccStepInfo (AccInfo t g) g where
   mappendDownMark :: AccInfo t g -> AccInfo t g
   mappendDownMark (DRevList (RevList rls)) = DRevList $ RevList $ RevList [] : rls
   mappendUpMark :: AccInfo t g -> g -> AccInfo t g
-  mappendUpMark drl g = drl <> DRevList (RevList [RevList [ISVar $ InVar g]])
+  mappendUpMark drl g = drl <> DRevList (RevList [RevList [ISVar g]])
 
 
 -- --------------------------- Actual Conversion Function ---------------------------
@@ -110,10 +114,11 @@ Procedure:
 - Prepare the rTSA to be with the `AccInfo`.
 - Construct the equation system.
 - Erase the empty variables.
+- Remove the duplicated variables with identical RHS.
 - Convert the equation system to the MCFG.
 -}
 rTSAToMultiCFG ::
-  (StdReq q m g sp (AccInfo t g), Ord q, Ord m, Ord (sp q m g), Ord t) =>
+  (StdReq q m g sp (AccInfo t g), Ord q, Ord m, Ord (sp q m g), Ord t, Hashable t) =>
   ExtendedRTSA q m g [t] sp
   -> IO (MultiCtxFreeGrammar (NonTer q g) t (Var g))
 rTSAToMultiCFG eRtsa = do
@@ -124,8 +129,49 @@ rTSAToMultiCFG eRtsa = do
   (_zeroVars, eqSys) <- return $ removeEmptyVars eqSys
   -- trace ("Empty vars found: " ++ show _zeroVars) $ return ()
   let x0 = x0Of rtsa
+  -- DEBUG: cannot use the original procedure for `removeDuplicatedVars`
+  -- Because the `acc` part should also be changed when the new information is found.
+  eqSys <- return $ replaceDupRules eqSys
   return $ eqSysToMultiCFG x0 eqSys
 
+replaceDupRules eqSys@(EqSys lst) = runST $ do
+  varTab <- collectDuplicateInfo nonNumNormalise eqSys
+  EqSys <$> replaceRules varTab lst
+
+replaceRules varTab lst = observeAllT $ do
+  (v, comps) <- toLogicT lst
+  ~(Just p) <- liftST $ HT.lookup varTab v
+  dv <- liftST $ UF.descriptor p
+  guard $ v == dv
+  comps <- liftST $ mapM (replaceComp varTab) comps
+  return (v, comps)
+
+-- | Tag the given information with also the id information
+newtype WId g = WId (g, Int)
+
+{-| Given a component: c * v1 * ... * vn
+
+In `c`, which is a double list: [[...], ..., [...]], when a stuff is to be replaced
+we should also replace the variable inside with id
+-}
+replaceComp varTab (SynComp (acc, vs)) = do
+  -- Set up a `g` map from the current variables to the new one
+  oldNewGMap <- HT.new
+  vs <- forM vs $ \v -> do
+    undefined
+  -- Replace the old `g` with the new tagged `g`
+  undefined
+
+-- | Does not merge / combine the `acc` information in the equation system
+nonNumNormalise :: (Monad m, Ord k, Ord a) =>
+  EqSys k a -> m [(k, M.Map (M.Map k Int) (S.Set a))]
+nonNumNormalise (EqSys lst) = return $ fmap (sndMap mapper) lst
+  where
+    mapper lst =
+      M.fromListWith S.union $ fmap conj lst
+    conj (SynComp (c, vs)) =
+      (M.fromListWith (+) $ map (,1 :: Int) vs, S.insert c S.empty)
+    
 
 -- --------------------------- Aux Functions for the Core ---------------------------
 
@@ -143,6 +189,10 @@ prepareRTSA = mapInfo toAccInfo
       |> toDoubleRevList
 
 
+
+-- ---------------------------- From EqSys to MCFG ----------------------------
+
+
 {-| To convert the equation system to a MCFG
 
 An equation system:
@@ -152,70 +202,91 @@ An equation system:
 Is converted to:
 
 > x (acc_i) <- x_i1 ... x_ij
+
+The assumed characteristic of the equation system:
+- 
 -}
-eqSysToMultiCFG :: (Ord g, Ord q, Hashable g) =>
-  AbsVar q g
-  -> EqSys (AbsVar q g) (AccInfo t g)
-  -> MultiCtxFreeGrammar (NonTer q g) t (Var g)
+eqSysToMultiCFG ::
+  (Hashable v, Show v, Ord v) =>
+  v
+  -> EqSys v (AccInfo t v)
+  -> MultiCtxFreeGrammar v t (Var v)
 eqSysToMultiCFG x0 eqSys =
   genMultiCFGRuleList eqSys
-  |> foldl addToMap M.empty
+  |> toColMap
   |> flip MultiCtxFreeGrammar x0
-  where
-    alterMap :: Monad m => a -> Maybe [a] -> m [a]
-    alterMap e = \case
-      Nothing -> return [e]
-      Just el -> return $ e : el
-    addToMap :: Ord k => M.Map k [a] -> (k, a) -> M.Map k [a]
-    addToMap map (v, e) =
-      M.alter (alterMap e) v map
 
 
 -- | Convert the equation system to a list of MCFG rules
 genMultiCFGRuleList ::
-  (Hashable g) => EqSys (AbsVar q g) (AccInfo t g)
-  -> [(NonTer q g, Rule (NonTer q g) t (Var g))]
+  (Hashable v, Show v) =>
+  EqSys v (AccInfo t v)
+  -> [(v, Rule v t (Var v))]
 genMultiCFGRuleList (EqSys lst) = do
   (v, comp) <- lst
   (SynComp (acc, vars)) <- comp
-  let body = revDoubleRevList acc
-             |> retagList
-             |> fmap Term
-      rhs  =
-        [
-          LocVarDecl (v, [ Var (g, idx) | idx <- [0..(len - 1) `div` 2] ])
-          |
-          v@(AbsVar len _ ~(GNorm g)) <- vars
-        ]
+  let (body, rhs) = computeRuleContent acc vars
+  -- let body = revDoubleRevList acc
+  --            |> retagList
+  --            |> fmap Term
+  --     rhs  =
+  --       [
+  --         LocVarDecl (v, [ Var (v, idx) | idx <- [0..maxIdx] ])
+  --         |
+  --         (v, maxIdx) <- M.toList $ maxIdxMap vars $ revDoubleRevList acc
+  --       ]
   return (v, Rule body rhs)
 
+-- maxIdxMap vars  = M.fromListWith max $ do
+--   term <- body
 
--- | Technical function to convert the `InSym` to `Sym` -- adding index to variables
-retagList ::
-  (Hashable g) => [[InSym t g]] -> [[Sym t]]
-retagList lst = runST $ do
-  gMap <- HT.new
-  initGMap gMap lst
-  gNextIdxMap <- HT.new
-  mapM (mapM $ retagSym gMap gNextIdxMap) lst
-  where
-    retagSym gMap gNextIdxMap = \case
-      ISTer t -> return $ STerminal t
-      ISVar (InVar g) -> do
-        ~(Just ntIdx) <- HT.lookup gMap g
-        HT.mutate gNextIdxMap g $ \case
-          Nothing -> (Just 1, SVar (ntIdx, 0))
-          Just nv -> (Just $ nv + 1, SVar (ntIdx, nv))
 
-initGMap :: (Hashable g) =>HashTable s g Int -> [[InSym t g]] -> ST s ()
-initGMap gMap (lst :: [[InSym t g]]) = do
-  ref :: STRef s Int <- newRef 0
-  forM_ lst $ mapM_ $ \case
-    ISTer _  -> return ()
-    ISVar (InVar g) -> do
-      HT.mutateST gMap g $ \case
-        Nothing -> do
-          next <- readRef ref
-          modifyRef ref (+1)
-          return (Just next, ())
-        Just ov -> return (Just ov, ())
+computeRuleContent acc vars = runST $ do
+  let lst = revDoubleRevList acc
+  getNextIdx <- stAutoCallCount  -- the dimension of the variables
+  varIdxMap <- HT.fromList $ zip vars [0 :: Int ..]
+
+  -- Traverse `lst` to number it at the same time, the `varDimMap` will be initialised
+  lst <- forM lst $ mapM $ \case
+    ISTer t -> return $ STerminal t
+    ISVar v -> HT.lookup varIdxMap v >>= \case
+      Nothing -> error $
+        "INTERNAL ERROR: when convert, found non-RHS variable for " ++
+        show v
+      Just rhsIdx -> do
+        nextDimIdx <- getNextIdx v
+        return $ SVar (rhsIdx, nextDimIdx)
+
+  let body = fmap Term lst
+  
+  undefined
+
+
+-- -- | Technical function to convert the `InSym` to `Sym` -- adding index to variables
+-- retagList :: [[InSym t v]] -> [[Sym t]]
+-- retagList lst = runST $ do
+--   gMap <- HT.new
+--   initGMap gMap lst
+--   gNextIdxMap <- HT.new
+--   mapM (mapM $ retagSym gMap gNextIdxMap) lst
+--   where
+--     retagSym gMap gNextIdxMap = \case
+--       ISTer t -> return $ STerminal t
+--       ISVar g -> do
+--         ~(Just ntIdx) <- HT.lookup gMap g
+--         HT.mutate gNextIdxMap g $ \case
+--           Nothing -> (Just 1, SVar (ntIdx, 0))
+--           Just nv -> (Just $ nv + 1, SVar (ntIdx, nv))
+
+-- initGMap :: (Hashable g) => HashTable s g Int -> [[InSym t g]] -> ST s ()
+-- initGMap gMap (lst :: [[InSym t g]]) = do
+--   ref :: STRef s Int <- newRef 0
+--   forM_ lst $ mapM_ $ \case
+--     ISTer _  -> return ()
+--     ISVar g -> do
+--       HT.mutateST gMap g $ \case
+--         Nothing -> do
+--           next <- readRef ref
+--           modifyRef ref (+1)
+--           return (Just next, ())
+--         Just ov -> return (Just ov, ())

@@ -1,5 +1,7 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use <$>" #-}
+{-# LANGUAGE LambdaCase #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 module Examples (
   toNStringMCFG,
   exampleCOPY,
@@ -7,16 +9,27 @@ module Examples (
   numberExtRtsa,
   numberRtsa,
   simplifiedExampleRtsaCOPY,
-  backToExampleCOPY
+  backToExampleCOPY,
+  exampleABCn,
+  exampleRtsaABCn,
+  backToExampleABCn,
+  exampleTripleDyck,
+  exampleRtsaTripleDyck,
+  backToExampleTripleDyck,
+  exampleO2,
+  exampleMIX3
 ) where
 import Parser ()
-import Objects (mapMCFG, ExtendedRTSA (eRtsaDownMap, eRtsaKMap), SpUnit (SpUnit), MultiCtxFreeGrammar, mapAut, RestrictedTreeStackAut, mapExtRtsa)
+import Objects (mapMCFG, SpUnit (SpUnit), MultiCtxFreeGrammar, mapAut, RestrictedTreeStackAut, mapExtRtsa, ExtendedRTSA (..))
 import Utils (NString(NString), stAutoNumber)
 import GrammarToAut ( LocMem, StackSym, State, mcfgToRtsa )
-import Control.Monad.Identity (Identity(runIdentity))
+import Control.Monad.Identity (Identity(runIdentity, Identity))
 import Data.Hashable ( Hashable )
 import Control.Monad.ST.Strict ( ST, runST )
 import EqSysBuild.MultiCFG (rTSAToMultiCFG, NonTer, Var)
+import AutOp (FiniteStateAut(FiniteStateAut), ReadFSA, intersectReg, stringHomo)
+import qualified Data.Set as S
+import qualified Data.Map.Strict as M
 
 {-
 This file defines some supportive functions to help construct
@@ -75,7 +88,8 @@ numberRtsa spMap rtsa = do
   mapAut qF mF gF return (spMap qF mF gF) rtsa
 
 numberExtRtsa ::
-  (Hashable q, Hashable m, Hashable g, Ord info, Ord (sp Int Int Int)) =>((q -> ST s Int)
+  (Hashable q, Hashable m, Hashable g, Ord info, Ord (sp Int Int Int)) =>
+  ((q -> ST s Int)
     -> (m -> ST s Int)
     -> (g -> ST s Int)
     -> sp q m g
@@ -130,8 +144,14 @@ numberExtRtsa spMap er = do
 --   }
 -- }
 simplifiedExampleRtsaCOPY :: IO (ExtendedRTSA Int Int Int [String] SpUnit)
-simplifiedExampleRtsaCOPY = do
-  ret <- exampleRtsaCOPY
+simplifiedExampleRtsaCOPY = toSimpExampleRtsa exampleCOPY
+
+toSimpExampleRtsa ::
+  (Hashable nt, Ord nt, Ord v, Hashable v) =>
+  MultiCtxFreeGrammar nt String v
+  -> IO (ExtendedRTSA Int Int Int [String] SpUnit)
+toSimpExampleRtsa mcfg = do
+  ret <- mcfgToRtsa mcfg
   return $ runST $ numberExtRtsa spMap ret
   where
     spMap _ _ _ _ = return SpUnit
@@ -141,21 +161,291 @@ simplifiedExampleRtsaCOPY = do
 --   Rules: [
 --     AbsVar 1 [0] \bot (v@(0,0)) <- AbsVar 2 [0,4] G(0) (v@(0,0)).
 --     AbsVar 2 [0,4] G(0) (v@(1,0) v@(1,1)) <- 
---            AbsVar 4 [0,1,2,3] G(1) (v@(1,0), v@(1,1)).
+--          AbsVar 4 [0,1,2,3] G(1) (v@(1,0), v@(1,1)).
 --     AbsVar 4 [0,1,2,3] G(1) (, ) <- .
---     AbsVar 4 [0,1,2,3] G(1) (`"a"` v@(1,0), `"a"` v@(1,1)) <- 
---            AbsVar 4 [0,1,2,3] G(1) (v@(1,0), v@(1,1)).
---     AbsVar 4 [0,1,2,3] G(1) (`"b"` v@(1,0), `"b"` v@(1,1)) <- 
---            AbsVar 4 [0,1,2,3] G(1) (v@(1,0), v@(1,1)).
+--     AbsVar 4 [0,1,2,3] G(1) (`a` v@(1,0), `a` v@(1,1)) <- 
+--          AbsVar 4 [0,1,2,3] G(1) (v@(1,0), v@(1,1)).
+--     AbsVar 4 [0,1,2,3] G(1) (`b` v@(1,0), `b` v@(1,1)) <- 
+--          AbsVar 4 [0,1,2,3] G(1) (v@(1,0), v@(1,1)).
 --   ],
 --   Starting Non-Terminal: AbsVar 1 [0] \bot
 -- }
 backToExampleCOPY :: IO
   (MultiCtxFreeGrammar
      (NonTer Int Int)
-     String
+     NString
      (Var Int))
 backToExampleCOPY = do
   ext <- simplifiedExampleRtsaCOPY
-  rTSAToMultiCFG $ ext { eRtsaDownMap = Nothing, eRtsaKMap = Nothing }
+  -- To test the auto-generated stuff.
+  ret <- rTSAToMultiCFG $ ext { eRtsaDownMap = Nothing, eRtsaKMap = Nothing }
+  mapMCFG return (return . NString) return ret
+
+
+-- >>> toNStringMCFG exampleABCn
+-- MCFG {
+--   Rules: [
+--     A (, , ) <- .
+--     A (`a` x, `b` y, `c` z) <- A (x, y, z).
+--     S (x y z) <- A (x, y, z).
+--   ],
+--   Starting Non-Terminal: S
+-- }
+exampleABCn :: MultiCtxFreeGrammar String String String
+exampleABCn = read $ unlines
+  [ "S (x y z) <- A (x, y, z)."
+  , "A (a x, b y, c z) <- A (x, y, z)."
+  , "A (,,) <- ." ]
+
+-- >>> exampleRtsaABCn
+-- Extended rTSA: {
+--   rTSA: {
+--     k = 3,
+--     q0 = 0,
+--     m0 = 0,
+--     rules = [
+--       (0, 0, \bot) -([])-> (0, 0, Up 0),
+--       (0, 0, G(0)) -([])-> (0, 3, Up 1),
+--       (0, 0, G(1)) -([])-> (1, 1, Down),
+--       (0, 0, G(1)) -(["a"])-> (0, 2, Up 1),
+--       (0, 1, G(1)) -([])-> (1, 1, Down),
+--       (0, 2, G(1)) -(["a"])-> (0, 2, Up 1),
+--       (0, 3, G(0)) -([])-> (0, 3, Up 1),
+--       (1, 2, G(1)) -([])-> (1, 2, Down),
+--       (1, 3, G(0)) -([])-> (2, 3, Up 1),
+--       (2, 0, G(1)) -([])-> (3, 1, Down),
+--       (2, 0, G(1)) -(["b"])-> (2, 2, Up 1),
+--       (2, 1, G(1)) -([])-> (3, 1, Down),
+--       (2, 2, G(1)) -(["b"])-> (2, 2, Up 1),
+--       (3, 2, G(1)) -([])-> (3, 2, Down),
+--       (3, 3, G(0)) -([])-> (4, 3, Up 1),
+--       (4, 0, G(1)) -([])-> (5, 1, Down),
+--       (4, 0, G(1)) -(["c"])-> (4, 2, Up 1),
+--       (4, 1, G(1)) -([])-> (5, 1, Down),
+--       (4, 2, G(1)) -(["c"])-> (4, 2, Up 1),
+--       (5, 2, G(1)) -([])-> (5, 2, Down),
+--       (5, 3, G(0)) -([])-> (6, 3, Down),
+--       (6, 0, \bot) -([])-> (0, 0, Down),
+--     ]
+--   },
+--   k map: {
+--     0 |-> 1
+--     1 |-> 3
+--   },
+--   down map: {
+--     (0,0) |-> [6]
+--     (0,1) |-> [1]
+--     (2,1) |-> [3]
+--     (4,1) |-> [5]
+--   }
+-- }
+exampleRtsaABCn :: IO (ExtendedRTSA Int Int Int [String] SpUnit)
+exampleRtsaABCn = toSimpExampleRtsa exampleABCn
+
+-- >>> backToExampleABCn
+-- MCFG {
+--   Rules: [
+--     AbsVar 1 [0] \bot (v@(0,0)) <- AbsVar 2 [0,6] G(0) (v@(0,0)).
+--     AbsVar 2 [0,6] G(0) (v@(1,0) v@(1,1) v@(1,2)) <- 
+--          AbsVar 6 [0,1,2,3,4,5] G(1) (v@(1,0), v@(1,1), v@(1,2)).
+--     AbsVar 6 [0,1,2,3,4,5] G(1) (, , ) <- .
+--     AbsVar 6 [0,1,2,3,4,5] G(1) (`a` v@(1,0), `b` v@(1,1), `c` v@(1,2)) <- 
+--          AbsVar 6 [0,1,2,3,4,5] G(1) (v@(1,0), v@(1,1), v@(1,2)).
+--   ],
+--   Starting Non-Terminal: AbsVar 1 [0] \bot
+-- }
+backToExampleABCn :: IO (MultiCtxFreeGrammar (NonTer Int Int) NString (Var Int))
+backToExampleABCn = do
+  ret <- exampleRtsaABCn >>= rTSAToMultiCFG
+  mapMCFG return (return . NString) return ret
+
+-- >>> toNStringMCFG exampleTripleDyck
+-- MCFG {
+--   Rules: [
+--     F (, , ) <- .
+--     F (`[` x `]` x', `[` y `]` y', `[` z `]` z') <- F (x, y, z), F (x', y', z').
+--     S (x `#` y `#` z) <- F (x, y, z).
+--   ],
+--   Starting Non-Terminal: S
+-- }
+exampleTripleDyck :: MultiCtxFreeGrammar String String String
+exampleTripleDyck = read $ concat
+  [ "S (x `#` y `#` z) <- F (x, y, z)."
+  , "F (`[` x `]` x', `[` y `]` y', `[` z `]` z') <- F (x, y, z), F (x', y', z')."
+  , "F (,,) <- ." ]
+
+-- >>> exampleRtsaTripleDyck
+-- Extended rTSA: {
+--   rTSA: {
+--     k = 3,
+--     q0 = 0,
+--     m0 = 0,
+--     rules = [
+--       (0, 0, \bot) -([])-> (0, 0, Up 0),
+--       (0, 0, G(0)) -([])-> (0, 3, Up 1),
+--       (0, 0, G(1)) -([])-> (1, 1, Down),
+--       (0, 0, G(1)) -(["["])-> (0, 2, Up 1),
+--       (0, 0, G(2)) -([])-> (2, 1, Down),
+--       (0, 0, G(2)) -(["["])-> (0, 2, Up 1),
+--       (0, 1, G(1)) -([])-> (1, 1, Down),
+--       (0, 1, G(2)) -([])-> (2, 1, Down),
+--       (0, 2, G(1)) -(["["])-> (0, 2, Up 1),
+--       (0, 2, G(2)) -(["["])-> (0, 2, Up 1),
+--       (0, 3, G(0)) -([])-> (0, 3, Up 1),
+--       (1, 2, G(1)) -(["]"])-> (0, 2, Up 2),
+--       (1, 2, G(2)) -(["]"])-> (0, 2, Up 2),
+--       (1, 3, G(0)) -(["#"])-> (3, 3, Up 1),
+--       (2, 2, G(1)) -([])-> (1, 2, Down),
+--       (2, 2, G(2)) -([])-> (2, 2, Down),
+--       (3, 0, G(1)) -([])-> (4, 1, Down),
+--       (3, 0, G(1)) -(["["])-> (3, 2, Up 1),
+--       (3, 0, G(2)) -([])-> (5, 1, Down),
+--       (3, 0, G(2)) -(["["])-> (3, 2, Up 1),
+--       (3, 1, G(1)) -([])-> (4, 1, Down),
+--       (3, 1, G(2)) -([])-> (5, 1, Down),
+--       (3, 2, G(1)) -(["["])-> (3, 2, Up 1),
+--       (3, 2, G(2)) -(["["])-> (3, 2, Up 1),
+--       (4, 2, G(1)) -(["]"])-> (3, 2, Up 2),
+--       (4, 2, G(2)) -(["]"])-> (3, 2, Up 2),
+--       (4, 3, G(0)) -(["#"])-> (6, 3, Up 1),
+--       (5, 2, G(1)) -([])-> (4, 2, Down),
+--       (5, 2, G(2)) -([])-> (5, 2, Down),
+--       (6, 0, G(1)) -([])-> (7, 1, Down),
+--       (6, 0, G(1)) -(["["])-> (6, 2, Up 1),
+--       (6, 0, G(2)) -([])-> (8, 1, Down),
+--       (6, 0, G(2)) -(["["])-> (6, 2, Up 1),
+--       (6, 1, G(1)) -([])-> (7, 1, Down),
+--       (6, 1, G(2)) -([])-> (8, 1, Down),
+--       (6, 2, G(1)) -(["["])-> (6, 2, Up 1),
+--       (6, 2, G(2)) -(["["])-> (6, 2, Up 1),
+--       (7, 2, G(1)) -(["]"])-> (6, 2, Up 2),
+--       (7, 2, G(2)) -(["]"])-> (6, 2, Up 2),
+--       (7, 3, G(0)) -([])-> (9, 3, Down),
+--       (8, 2, G(1)) -([])-> (7, 2, Down),
+--       (8, 2, G(2)) -([])-> (8, 2, Down),
+--       (9, 0, \bot) -([])-> (0, 0, Down),
+--     ]
+--   },
+--   k map: {
+--     0 |-> 1
+--     1 |-> 3
+--     2 |-> 3
+--   },
+--   down map: {
+--     (0,0) |-> [9]
+--     (0,1) |-> [1]
+--     (0,2) |-> [2]
+--     (3,1) |-> [4]
+--     (3,2) |-> [5]
+--     (6,1) |-> [7]
+--     (6,2) |-> [8]
+--   }
+-- }
+exampleRtsaTripleDyck :: IO (ExtendedRTSA Int Int Int [String] SpUnit)
+exampleRtsaTripleDyck = toSimpExampleRtsa exampleTripleDyck
+
+-- >>> backToExampleTripleDyck
+backToExampleTripleDyck :: IO (MultiCtxFreeGrammar (NonTer Int Int) NString (Var Int))
+backToExampleTripleDyck = do
+  ret <- exampleRtsaTripleDyck >>= rTSAToMultiCFG
+  mapMCFG return (return . NString) return ret
+
+-- >>> toNStringMCFG exampleO2
+-- MCFG {
+--   Rules: [
+--     Inv (x1, `oa2` x2 `a2`) <- Inv (x1, x2).
+--     Inv (x1 `oa2`, x2 `a2`) <- Inv (x1, x2).
+--     Inv (x1 `oa2`, `a2` x2) <- Inv (x1, x2).
+--     Inv (`oa2` x1, x2 `a2`) <- Inv (x1, x2).
+--     Inv (`oa2` x1, `a2` x2) <- Inv (x1, x2).
+--     Inv (`oa2` x1 `a2`, x2) <- Inv (x1, x2).
+--     Inv (x1, `oa1` x2 `a1`) <- Inv (x1, x2).
+--     Inv (x1 `oa1`, x2 `a1`) <- Inv (x1, x2).
+--     Inv (x1 `oa1`, `a1` x2) <- Inv (x1, x2).
+--     Inv (`oa1` x1, x2 `a1`) <- Inv (x1, x2).
+--     Inv (`oa1` x1, `a1` x2) <- Inv (x1, x2).
+--     Inv (`oa1` x1 `a1`, x2) <- Inv (x1, x2).
+--     Inv (x1, `a2` x2 `oa2`) <- Inv (x1, x2).
+--     Inv (x1 `a2`, x2 `oa2`) <- Inv (x1, x2).
+--     Inv (x1 `a2`, `oa2` x2) <- Inv (x1, x2).
+--     Inv (`a2` x1, x2 `oa2`) <- Inv (x1, x2).
+--     Inv (`a2` x1, `oa2` x2) <- Inv (x1, x2).
+--     Inv (`a2` x1 `oa2`, x2) <- Inv (x1, x2).
+--     Inv (x1, `a1` x2 `oa1`) <- Inv (x1, x2).
+--     Inv (x1 `a1`, x2 `oa1`) <- Inv (x1, x2).
+--     Inv (x1 `a1`, `oa1` x2) <- Inv (x1, x2).
+--     Inv (`a1` x1, x2 `oa1`) <- Inv (x1, x2).
+--     Inv (`a1` x1, `oa1` x2) <- Inv (x1, x2).
+--     Inv (`a1` x1 `oa1`, x2) <- Inv (x1, x2).
+--     Inv (, ) <- .
+--     Inv (, x1 y1 x2 y2) <- Inv (x1, x2), Inv (y1, y2).
+--     Inv (x1, y1 x2 y2) <- Inv (x1, x2), Inv (y1, y2).
+--     Inv (x1 y1, x2 y2) <- Inv (x1, x2), Inv (y1, y2).
+--     Inv (x1 y1 x2, y2) <- Inv (x1, x2), Inv (y1, y2).
+--     Inv (x1 y1 x2 y2, ) <- Inv (x1, x2), Inv (y1, y2).
+--     S (x y) <- Inv (x, y).
+--   ],
+--   Starting Non-Terminal: S
+-- }
+exampleO2 :: MultiCtxFreeGrammar String String String
+exampleO2 = read $ concat $
+  [ "S (x y) <- Inv (x, y)."
+  , "Inv (x1 y1 x2 y2, ) <- Inv (x1, x2), Inv (y1, y2)."
+  , "Inv (x1 y1 x2, y2 ) <- Inv (x1, x2), Inv (y1, y2)."
+  , "Inv (x1 y1, x2 y2 ) <- Inv (x1, x2), Inv (y1, y2)."
+  , "Inv (x1, y1 x2 y2 ) <- Inv (x1, x2), Inv (y1, y2)."
+  , "Inv (, x1 y1 x2 y2) <- Inv (x1, x2), Inv (y1, y2)."
+  , "Inv (,) <- ."
+  ] ++ moreRules
+  where
+    moreRules = do
+      k <- [ "a1", "a2", "oa1", "oa2" ]
+      let cK = case k of
+                "a1" -> "oa1"
+                "a2" -> "oa2"
+                "oa1" -> "a1"
+                "oa2" -> "a2"
+                _ -> error "IMPOSSIBLE"
+      [   "Inv (" ++ k ++ " x1 " ++ cK ++ ", x2) <- Inv (x1, x2)."
+        , "Inv (" ++ k ++ " x1, " ++ cK ++ " x2) <- Inv (x1, x2)."
+        , "Inv (" ++ k ++ " x1, x2 " ++ cK ++ ") <- Inv (x1, x2)."
+        , "Inv (x1 " ++ k ++ ", " ++ cK ++ " x2) <- Inv (x1, x2)."
+        , "Inv (x1 " ++ k ++ ", x2 " ++ cK ++ ") <- Inv (x1, x2)."
+        , "Inv (x1, " ++ k ++ " x2 " ++ cK ++ ") <- Inv (x1, x2)."
+        ]
+
+pureABCLanguage :: ReadFSA Int String
+pureABCLanguage = FiniteStateAut rules (S.fromList [1]) 1
+  where
+    rules = M.fromList
+      [ 1 -| "a1" |-> 1
+      , 1 -| "a2" |-> 1
+      , 1 -| "oa1" |-> 2
+      , 2 -| "oa2" |-> 1 ]
+
+infix 3 -|
+infix 2 |->
+
+(-|) :: a -> b -> (a, b)
+st -| v = (st, v)
+
+(|->) :: a1 -> a2 -> (a1, Identity a2)
+p |-> st = (p, Identity st)
+
+-- >>> exampleMIX3
+exampleMIX3 :: IO (MultiCtxFreeGrammar (NonTer (Int, Int) Int) NString (Var Int))
+exampleMIX3 = do
+  o2 <- mcfgToRtsa exampleO2
+  o2 <- return $ runST $ numberExtRtsa (\_ _ _ _ -> return SpUnit) o2
+  let preMIX  = intersectReg (eRtsaAutomaton o2) pureABCLanguage
+      mix3Aut = stringHomo preMIX mapper
+  ret <- rTSAToMultiCFG $ ExtendedRTSA mix3Aut Nothing Nothing
+  mapMCFG return (return . NString . (:[])) return ret
+  where
+    mapper = \case
+      "a1" -> "A"
+      "a2" -> "B"
+      "oa1" -> "C"
+      "oa2" -> ""
+      _other -> error "IMPOSSIBLE."
 

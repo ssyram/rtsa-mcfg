@@ -56,7 +56,7 @@ parseWithRest = parse . getToTheEnd
 getToTheEnd :: Parser a -> Parser (a, String)
 getToTheEnd parser = do
   main <- parser
-  rest <- manyTill anyChar eof
+  rest <- whiteSpace *> manyTill anyChar eof
   return (main, rest)
 
 -- ----------------------------- End of Infrastructure -----------------------------
@@ -102,7 +102,7 @@ lex :: Parser a -> Parser a
 lex parser = try $ whiteSpace *> parser
 
 sym :: Parser Sym
-sym = lex $ Sym <$> identifier
+sym = lex $ fmap Sym $ try identifier <|> terminal
 nonTer :: Parser NonTer
 nonTer = lex $ NonTer <$> identifier
 var :: Parser Var
@@ -114,6 +114,12 @@ midDiv = lex $ choice $ try <$>
   ]
 endRule :: Parser ()
 endRule = lex $ oneOf ".;" $> ()
+terminal :: Parser String
+terminal = do
+  void $ lex $ char '`'
+  ret <- many $ noneOf "`"
+  void $ lex $ char '`'
+  return ret
 
 rule :: Parser Rule
 rule = do
