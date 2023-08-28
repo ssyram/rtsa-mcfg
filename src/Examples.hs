@@ -20,13 +20,13 @@ module Examples (
   exampleMIX3
 ) where
 import Parser ()
-import Objects (mapMCFG, SpUnit (SpUnit), MultiCtxFreeGrammar (mcfgStartNonTer), mapAut, RestrictedTreeStackAut, mapExtRtsa, ExtendedRTSA (..), CheckValid (isValid))
-import Utils (NString(NString), stAutoNumber, ioAutoNumber)
+import Objects (mapMCFG, SpUnit (SpUnit), MultiCtxFreeGrammar (mcfgStartNonTer, MultiCtxFreeGrammar), mapAut, RestrictedTreeStackAut, mapExtRtsa, ExtendedRTSA (..), CheckValid (isValid))
+import Utils (NString(NString), stAutoNumber, ioAutoNumber, quoteBy)
 import GrammarToAut ( LocMem, StackSym, State, mcfgToRtsa )
 import Control.Monad.Identity (Identity(runIdentity, Identity))
 import Data.Hashable ( Hashable )
 import Control.Monad.ST.Strict ( ST, runST )
-import EqSysBuild.MultiCFG (rTSAToMultiCFG, NonTer, Var)
+import EqSysBuild.MultiCFG (rTSAToMultiCFG, NonTer, Var (..))
 import AutOp (FiniteStateAut(FiniteStateAut), ReadFSA, extIntersectReg, extStringHomo)
 import qualified Data.Set as S
 import qualified Data.Map.Strict as M
@@ -433,20 +433,464 @@ st -| v = (st, v)
 p |-> st = (p, Identity st)
 
 -- >>> exampleMIX3
-exampleMIX3 :: IO (MultiCtxFreeGrammar NString NString (Var Int))
+-- MCFG {
+--   Rules: [
+--     F (x0 x1) <- F8 (x0, x1).
+--     F (x0 x1) <- F1 (x0, x1).
+--     F1 (`C` x0 `A`, x1) <- F2 (x0, x1).
+--     F1 (`C` x0, x1 `A`) <- F2 (x0, x1).
+--     F1 (`C` x0, `A` x1) <- F2 (x0, x1).
+--     F1 (`B` x0, x1) <- F3 (x0, x1).
+--     F1 (`B` x0, x1) <- F4 (x0, x1).
+--     F1 (`A` x0, `C` x1) <- F5 (x0, x1).
+--     F1 (, x0 y0 x1 y1) <- F6 (x0, x1), F7 (y0, y1).
+--     F1 (, x0 y0 x1 y1) <- F8 (x0, x1), F9 (y0, y1).
+--     F1 (, x0 y0 x1 y1) <- F10 (x0, x1), F11 (y0, y1).
+--     F1 (, x0 y0 x1 y1) <- F3 (x0, x1), F2 (y0, y1).
+--     F1 (, x0 y0 x1 y1) <- F12 (x0, x1), F8 (y0, y1).
+--     F1 (, x0 y0 x1 y1) <- F5 (x0, x1), F3 (y0, y1).
+--     F1 (, x0 y0 x1 y1) <- F4 (x0, x1), F5 (y0, y1).
+--     F1 (, x0 y0 x1 y1) <- F1 (x0, x1), F1 (y0, y1).
+--     F1 (, ) <- .
+--     F1 (x0 y0 x1 y1, ) <- F6 (x0, x1), F7 (y0, y1).
+--     F1 (x0 y0 x1 y1, ) <- F8 (x0, x1), F9 (y0, y1).
+--     F1 (x0 y0 x1 y1, ) <- F10 (x0, x1), F11 (y0, y1).
+--     F1 (x0 y0 x1 y1, ) <- F3 (x0, x1), F2 (y0, y1).
+--     F1 (x0 y0 x1 y1, ) <- F12 (x0, x1), F8 (y0, y1).
+--     F1 (x0 y0 x1 y1, ) <- F5 (x0, x1), F3 (y0, y1).
+--     F1 (x0 y0 x1 y1, ) <- F4 (x0, x1), F5 (y0, y1).
+--     F1 (x0 y0 x1 y1, ) <- F1 (x0, x1), F1 (y0, y1).
+--     F1 (x0 y0 x1, y1) <- F8 (x0, x1), F9 (y0, y1).
+--     F1 (x0 y0 x1, y1) <- F3 (x0, x1), F2 (y0, y1).
+--     F1 (x0 y0 x1, y1) <- F5 (x0, x1), F3 (y0, y1).
+--     F1 (x0 y0 x1, y1) <- F1 (x0, x1), F1 (y0, y1).
+--     F1 (x0 y0, x1 y1) <- F10 (x0, x1), F11 (y0, y1).
+--     F1 (x0 y0, x1 y1) <- F3 (x0, x1), F2 (y0, y1).
+--     F1 (x0 y0, x1 y1) <- F4 (x0, x1), F5 (y0, y1).
+--     F1 (x0 y0, x1 y1) <- F1 (x0, x1), F1 (y0, y1).
+--     F1 (x0, x1 `B`) <- F3 (x0, x1).
+--     F1 (x0, `B` x1) <- F3 (x0, x1).
+--     F1 (x0 `B`, x1) <- F4 (x0, x1).
+--     F1 (x0 `A`, `C` x1) <- F5 (x0, x1).
+--     F1 (x0, y0 x1 y1) <- F12 (x0, x1), F8 (y0, y1).
+--     F1 (x0, y0 x1 y1) <- F5 (x0, x1), F3 (y0, y1).
+--     F1 (x0, y0 x1 y1) <- F4 (x0, x1), F5 (y0, y1).
+--     F1 (x0, y0 x1 y1) <- F1 (x0, x1), F1 (y0, y1).
+--     F1 (x0, `C` x1 `A`) <- F5 (x0, x1).
+--     F1 (x0, `B` x1) <- F4 (x0, x1).
+--     F10 (`C` x0, `A` x1) <- F15 (x0, x1).
+--     F10 (`A` x0 `C`, x1) <- F4 (x0, x1).
+--     F10 (`A` x0, x1 `C`) <- F3 (x0, x1).
+--     F10 (`A` x0, `C` x1) <- F6 (x0, x1).
+--     F10 (x0 y0 x1, y1) <- F6 (x0, x1), F15 (y0, y1).
+--     F10 (x0 y0 x1, y1) <- F10 (x0, x1), F13 (y0, y1).
+--     F10 (x0 y0 x1, y1) <- F12 (x0, x1), F10 (y0, y1).
+--     F10 (x0 y0 x1, y1) <- F4 (x0, x1), F4 (y0, y1).
+--     F10 (x0 y0, x1 y1) <- F10 (x0, x1), F14 (y0, y1).
+--     F10 (x0 y0, x1 y1) <- F3 (x0, x1), F15 (y0, y1).
+--     F10 (x0 y0, x1 y1) <- F4 (x0, x1), F6 (y0, y1).
+--     F10 (x0 y0, x1 y1) <- F1 (x0, x1), F10 (y0, y1).
+--     F10 (x0 `C`, `A` x1) <- F4 (x0, x1).
+--     F10 (x0, y0 x1 y1) <- F6 (x0, x1), F6 (y0, y1).
+--     F10 (x0, y0 x1 y1) <- F8 (x0, x1), F10 (y0, y1).
+--     F10 (x0, y0 x1 y1) <- F10 (x0, x1), F12 (y0, y1).
+--     F10 (x0, y0 x1 y1) <- F3 (x0, x1), F4 (y0, y1).
+--     F10 (x0, `A` x1 `C`) <- F3 (x0, x1).
+--     F11 (x0 y0 x1, y1) <- F7 (x0, x1), F7 (y0, y1).
+--     F11 (x0 y0 x1, y1) <- F9 (x0, x1), F11 (y0, y1).
+--     F11 (x0 y0 x1, y1) <- F11 (x0, x1), F8 (y0, y1).
+--     F11 (x0 y0 x1, y1) <- F2 (x0, x1), F5 (y0, y1).
+--     F11 (x0 y0, x1 y1) <- F14 (x0, x1), F11 (y0, y1).
+--     F11 (x0 y0, x1 y1) <- F7 (x0, x1), F2 (y0, y1).
+--     F11 (x0 y0, x1 y1) <- F16 (x0, x1), F5 (y0, y1).
+--     F11 (x0 y0, x1 y1) <- F11 (x0, x1), F1 (y0, y1).
+--     F11 (x0, x1 `B`) <- F7 (x0, x1).
+--     F11 (x0 `B`, x1) <- F16 (x0, x1).
+--     F11 (x0 `B`, x1) <- F2 (x0, x1).
+--     F11 (x0, y0 x1 y1) <- F16 (x0, x1), F7 (y0, y1).
+--     F11 (x0, y0 x1 y1) <- F11 (x0, x1), F9 (y0, y1).
+--     F11 (x0, y0 x1 y1) <- F13 (x0, x1), F11 (y0, y1).
+--     F11 (x0, y0 x1 y1) <- F2 (x0, x1), F2 (y0, y1).
+--     F11 (x0, x1 `B`) <- F2 (x0, x1).
+--     F11 (x0 `B`, x1) <- F5 (x0, x1).
+--     F11 (x0, x1 `B`) <- F5 (x0, x1).
+--     F12 (`C` x0 `A`, x1) <- F16 (x0, x1).
+--     F12 (`B` x0, x1) <- F6 (x0, x1).
+--     F12 (`B` x0, x1) <- F4 (x0, x1).
+--     F12 (`A` x0, x1 `C`) <- F5 (x0, x1).
+--     F12 (, x0 y0 x1 y1) <- F14 (x0, x1), F14 (y0, y1).
+--     F12 (, x0 y0 x1 y1) <- F7 (x0, x1), F15 (y0, y1).
+--     F12 (, x0 y0 x1 y1) <- F15 (x0, x1), F16 (y0, y1).
+--     F12 (, x0 y0 x1 y1) <- F9 (x0, x1), F13 (y0, y1).
+--     F12 (, x0 y0 x1 y1) <- F16 (x0, x1), F6 (y0, y1).
+--     F12 (, x0 y0 x1 y1) <- F11 (x0, x1), F10 (y0, y1).
+--     F12 (, x0 y0 x1 y1) <- F13 (x0, x1), F12 (y0, y1).
+--     F12 (, x0 y0 x1 y1) <- F2 (x0, x1), F4 (y0, y1).
+--     F12 (, ) <- .
+--     F12 (x0 y0 x1 y1, ) <- F6 (x0, x1), F7 (y0, y1).
+--     F12 (x0 y0 x1 y1, ) <- F8 (x0, x1), F9 (y0, y1).
+--     F12 (x0 y0 x1 y1, ) <- F10 (x0, x1), F11 (y0, y1).
+--     F12 (x0 y0 x1 y1, ) <- F3 (x0, x1), F2 (y0, y1).
+--     F12 (x0 y0 x1 y1, ) <- F12 (x0, x1), F8 (y0, y1).
+--     F12 (x0 y0 x1 y1, ) <- F5 (x0, x1), F3 (y0, y1).
+--     F12 (x0 y0 x1 y1, ) <- F4 (x0, x1), F5 (y0, y1).
+--     F12 (x0 y0 x1 y1, ) <- F1 (x0, x1), F1 (y0, y1).
+--     F12 (x0 y0 x1, y1) <- F8 (x0, x1), F14 (y0, y1).
+--     F12 (x0 y0 x1, y1) <- F3 (x0, x1), F16 (y0, y1).
+--     F12 (x0 y0 x1, y1) <- F5 (x0, x1), F6 (y0, y1).
+--     F12 (x0 y0 x1, y1) <- F1 (x0, x1), F12 (y0, y1).
+--     F12 (x0 y0, x1 y1) <- F6 (x0, x1), F16 (y0, y1).
+--     F12 (x0 y0, x1 y1) <- F8 (x0, x1), F13 (y0, y1).
+--     F12 (x0 y0, x1 y1) <- F12 (x0, x1), F12 (y0, y1).
+--     F12 (x0 y0, x1 y1) <- F5 (x0, x1), F4 (y0, y1).
+--     F12 (x0 `B`, x1) <- F4 (x0, x1).
+--     F12 (x0 `A`, x1 `C`) <- F5 (x0, x1).
+--     F12 (x0, y0 x1 y1) <- F12 (x0, x1), F14 (y0, y1).
+--     F12 (x0, y0 x1 y1) <- F5 (x0, x1), F15 (y0, y1).
+--     F12 (x0, y0 x1 y1) <- F4 (x0, x1), F16 (y0, y1).
+--     F12 (x0, y0 x1 y1) <- F1 (x0, x1), F13 (y0, y1).
+--     F13 (x0 y0 x1, y1) <- F7 (x0, x1), F15 (y0, y1).
+--     F13 (x0 y0 x1, y1) <- F9 (x0, x1), F13 (y0, y1).
+--     F13 (x0 y0 x1, y1) <- F11 (x0, x1), F10 (y0, y1).
+--     F13 (x0 y0 x1, y1) <- F2 (x0, x1), F4 (y0, y1).
+--     F13 (x0 y0, x1 y1) <- F15 (x0, x1), F16 (y0, y1).
+--     F13 (x0 y0, x1 y1) <- F9 (x0, x1), F13 (y0, y1).
+--     F13 (x0 y0, x1 y1) <- F13 (x0, x1), F12 (y0, y1).
+--     F13 (x0 y0, x1 y1) <- F2 (x0, x1), F4 (y0, y1).
+--     F13 (x0, `B` x1) <- F15 (x0, x1).
+--     F13 (x0 `A`, x1 `C`) <- F2 (x0, x1).
+--     F13 (x0 `A`, `C` x1) <- F16 (x0, x1).
+--     F13 (x0, y0 x1 y1) <- F16 (x0, x1), F6 (y0, y1).
+--     F13 (x0, y0 x1 y1) <- F11 (x0, x1), F10 (y0, y1).
+--     F13 (x0, y0 x1 y1) <- F13 (x0, x1), F12 (y0, y1).
+--     F13 (x0, y0 x1 y1) <- F2 (x0, x1), F4 (y0, y1).
+--     F13 (x0, `A` x1 `C`) <- F2 (x0, x1).
+--     F13 (x0 `B`, x1) <- F4 (x0, x1).
+--     F13 (x0, `B` x1) <- F4 (x0, x1).
+--     F14 (, x0 y0 x1 y1) <- F14 (x0, x1), F14 (y0, y1).
+--     F14 (, x0 y0 x1 y1) <- F7 (x0, x1), F15 (y0, y1).
+--     F14 (, x0 y0 x1 y1) <- F15 (x0, x1), F16 (y0, y1).
+--     F14 (, x0 y0 x1 y1) <- F9 (x0, x1), F13 (y0, y1).
+--     F14 (, x0 y0 x1 y1) <- F16 (x0, x1), F6 (y0, y1).
+--     F14 (, x0 y0 x1 y1) <- F11 (x0, x1), F10 (y0, y1).
+--     F14 (, x0 y0 x1 y1) <- F13 (x0, x1), F12 (y0, y1).
+--     F14 (, x0 y0 x1 y1) <- F2 (x0, x1), F4 (y0, y1).
+--     F14 (, ) <- .
+--     F14 (x0 y0 x1 y1, ) <- F14 (x0, x1), F14 (y0, y1).
+--     F14 (x0 y0 x1 y1, ) <- F7 (x0, x1), F15 (y0, y1).
+--     F14 (x0 y0 x1 y1, ) <- F15 (x0, x1), F16 (y0, y1).
+--     F14 (x0 y0 x1 y1, ) <- F9 (x0, x1), F13 (y0, y1).
+--     F14 (x0 y0 x1 y1, ) <- F16 (x0, x1), F6 (y0, y1).
+--     F14 (x0 y0 x1 y1, ) <- F11 (x0, x1), F10 (y0, y1).
+--     F14 (x0 y0 x1 y1, ) <- F13 (x0, x1), F12 (y0, y1).
+--     F14 (x0 y0 x1 y1, ) <- F2 (x0, x1), F4 (y0, y1).
+--     F14 (x0 y0 x1, y1) <- F14 (x0, x1), F14 (y0, y1).
+--     F14 (x0 y0 x1, y1) <- F15 (x0, x1), F16 (y0, y1).
+--     F14 (x0 y0 x1, y1) <- F16 (x0, x1), F6 (y0, y1).
+--     F14 (x0 y0 x1, y1) <- F13 (x0, x1), F12 (y0, y1).
+--     F14 (x0 y0, x1 y1) <- F14 (x0, x1), F14 (y0, y1).
+--     F14 (x0 y0, x1 y1) <- F7 (x0, x1), F15 (y0, y1).
+--     F14 (x0 y0, x1 y1) <- F16 (x0, x1), F6 (y0, y1).
+--     F14 (x0 y0, x1 y1) <- F11 (x0, x1), F10 (y0, y1).
+--     F14 (x0, y0 x1 y1) <- F14 (x0, x1), F14 (y0, y1).
+--     F14 (x0, y0 x1 y1) <- F7 (x0, x1), F15 (y0, y1).
+--     F14 (x0, y0 x1 y1) <- F15 (x0, x1), F16 (y0, y1).
+--     F14 (x0, y0 x1 y1) <- F9 (x0, x1), F13 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F6 (x0, x1), F14 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F8 (x0, x1), F15 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F10 (x0, x1), F16 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F3 (x0, x1), F13 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F12 (x0, x1), F6 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F5 (x0, x1), F10 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F4 (x0, x1), F12 (y0, y1).
+--     F15 (, x0 y0 x1 y1) <- F1 (x0, x1), F4 (y0, y1).
+--     F15 (x0 y0 x1, y1) <- F14 (x0, x1), F15 (y0, y1).
+--     F15 (x0 y0 x1, y1) <- F15 (x0, x1), F13 (y0, y1).
+--     F15 (x0 y0 x1, y1) <- F16 (x0, x1), F10 (y0, y1).
+--     F15 (x0 y0 x1, y1) <- F13 (x0, x1), F4 (y0, y1).
+--     F15 (x0 y0, x1 y1) <- F15 (x0, x1), F14 (y0, y1).
+--     F15 (x0 y0, x1 y1) <- F9 (x0, x1), F15 (y0, y1).
+--     F15 (x0 y0, x1 y1) <- F13 (x0, x1), F6 (y0, y1).
+--     F15 (x0 y0, x1 y1) <- F2 (x0, x1), F10 (y0, y1).
+--     F15 (x0 `C`, `A` x1) <- F13 (x0, x1).
+--     F15 (x0, y0 x1 y1) <- F14 (x0, x1), F6 (y0, y1).
+--     F15 (x0, y0 x1 y1) <- F7 (x0, x1), F10 (y0, y1).
+--     F15 (x0, y0 x1 y1) <- F15 (x0, x1), F12 (y0, y1).
+--     F15 (x0, y0 x1 y1) <- F9 (x0, x1), F4 (y0, y1).
+--     F15 (x0, `A` x1 `C`) <- F9 (x0, x1).
+--     F15 (x0, `B` x1) <- F10 (x0, x1).
+--     F16 (x0 y0 x1 y1, ) <- F14 (x0, x1), F7 (y0, y1).
+--     F16 (x0 y0 x1 y1, ) <- F7 (x0, x1), F9 (y0, y1).
+--     F16 (x0 y0 x1 y1, ) <- F15 (x0, x1), F11 (y0, y1).
+--     F16 (x0 y0 x1 y1, ) <- F9 (x0, x1), F2 (y0, y1).
+--     F16 (x0 y0 x1 y1, ) <- F16 (x0, x1), F8 (y0, y1).
+--     F16 (x0 y0 x1 y1, ) <- F11 (x0, x1), F3 (y0, y1).
+--     F16 (x0 y0 x1 y1, ) <- F13 (x0, x1), F5 (y0, y1).
+--     F16 (x0 y0 x1 y1, ) <- F2 (x0, x1), F1 (y0, y1).
+--     F16 (x0 y0 x1, y1) <- F7 (x0, x1), F14 (y0, y1).
+--     F16 (x0 y0 x1, y1) <- F9 (x0, x1), F16 (y0, y1).
+--     F16 (x0 y0 x1, y1) <- F11 (x0, x1), F6 (y0, y1).
+--     F16 (x0 y0 x1, y1) <- F2 (x0, x1), F12 (y0, y1).
+--     F16 (x0 y0, x1 y1) <- F14 (x0, x1), F16 (y0, y1).
+--     F16 (x0 y0, x1 y1) <- F7 (x0, x1), F13 (y0, y1).
+--     F16 (x0 y0, x1 y1) <- F16 (x0, x1), F12 (y0, y1).
+--     F16 (x0 y0, x1 y1) <- F11 (x0, x1), F4 (y0, y1).
+--     F16 (x0 `B`, x1) <- F13 (x0, x1).
+--     F16 (x0 `A`, x1 `C`) <- F11 (x0, x1).
+--     F16 (x0, y0 x1 y1) <- F16 (x0, x1), F14 (y0, y1).
+--     F16 (x0, y0 x1 y1) <- F11 (x0, x1), F15 (y0, y1).
+--     F16 (x0, y0 x1 y1) <- F13 (x0, x1), F16 (y0, y1).
+--     F16 (x0, y0 x1 y1) <- F2 (x0, x1), F13 (y0, y1).
+--     F16 (x0 `B`, x1) <- F12 (x0, x1).
+--     F2 (x0 y0 x1 y1, ) <- F14 (x0, x1), F7 (y0, y1).
+--     F2 (x0 y0 x1 y1, ) <- F7 (x0, x1), F9 (y0, y1).
+--     F2 (x0 y0 x1 y1, ) <- F15 (x0, x1), F11 (y0, y1).
+--     F2 (x0 y0 x1 y1, ) <- F9 (x0, x1), F2 (y0, y1).
+--     F2 (x0 y0 x1 y1, ) <- F16 (x0, x1), F8 (y0, y1).
+--     F2 (x0 y0 x1 y1, ) <- F11 (x0, x1), F3 (y0, y1).
+--     F2 (x0 y0 x1 y1, ) <- F13 (x0, x1), F5 (y0, y1).
+--     F2 (x0 y0 x1 y1, ) <- F2 (x0, x1), F1 (y0, y1).
+--     F2 (x0 y0 x1, y1) <- F7 (x0, x1), F9 (y0, y1).
+--     F2 (x0 y0 x1, y1) <- F9 (x0, x1), F2 (y0, y1).
+--     F2 (x0 y0 x1, y1) <- F11 (x0, x1), F3 (y0, y1).
+--     F2 (x0 y0 x1, y1) <- F2 (x0, x1), F1 (y0, y1).
+--     F2 (x0 y0, x1 y1) <- F15 (x0, x1), F11 (y0, y1).
+--     F2 (x0 y0, x1 y1) <- F9 (x0, x1), F2 (y0, y1).
+--     F2 (x0 y0, x1 y1) <- F13 (x0, x1), F5 (y0, y1).
+--     F2 (x0 y0, x1 y1) <- F2 (x0, x1), F1 (y0, y1).
+--     F2 (x0, x1 `B`) <- F9 (x0, x1).
+--     F2 (x0, `B` x1) <- F9 (x0, x1).
+--     F2 (x0 `B`, x1) <- F13 (x0, x1).
+--     F2 (x0 `A`, `C` x1) <- F11 (x0, x1).
+--     F2 (x0, y0 x1 y1) <- F16 (x0, x1), F8 (y0, y1).
+--     F2 (x0, y0 x1 y1) <- F11 (x0, x1), F3 (y0, y1).
+--     F2 (x0, y0 x1 y1) <- F13 (x0, x1), F5 (y0, y1).
+--     F2 (x0, y0 x1 y1) <- F2 (x0, x1), F1 (y0, y1).
+--     F2 (x0, `C` x1 `A`) <- F11 (x0, x1).
+--     F2 (x0, `B` x1) <- F13 (x0, x1).
+--     F2 (x0 `B`, x1) <- F1 (x0, x1).
+--     F2 (x0, x1 `B`) <- F1 (x0, x1).
+--     F2 (x0, `B` x1) <- F1 (x0, x1).
+--     F3 (`C` x0, x1 `A`) <- F9 (x0, x1).
+--     F3 (`C` x0, `A` x1) <- F9 (x0, x1).
+--     F3 (`B` x0, x1) <- F10 (x0, x1).
+--     F3 (`A` x0 `C`, x1) <- F1 (x0, x1).
+--     F3 (`A` x0, `C` x1) <- F8 (x0, x1).
+--     F3 (x0 y0 x1 y1, ) <- F6 (x0, x1), F14 (y0, y1).
+--     F3 (x0 y0 x1 y1, ) <- F8 (x0, x1), F15 (y0, y1).
+--     F3 (x0 y0 x1 y1, ) <- F10 (x0, x1), F16 (y0, y1).
+--     F3 (x0 y0 x1 y1, ) <- F3 (x0, x1), F13 (y0, y1).
+--     F3 (x0 y0 x1 y1, ) <- F12 (x0, x1), F6 (y0, y1).
+--     F3 (x0 y0 x1 y1, ) <- F5 (x0, x1), F10 (y0, y1).
+--     F3 (x0 y0 x1 y1, ) <- F4 (x0, x1), F12 (y0, y1).
+--     F3 (x0 y0 x1 y1, ) <- F1 (x0, x1), F4 (y0, y1).
+--     F3 (x0 y0 x1, y1) <- F6 (x0, x1), F9 (y0, y1).
+--     F3 (x0 y0 x1, y1) <- F10 (x0, x1), F2 (y0, y1).
+--     F3 (x0 y0 x1, y1) <- F12 (x0, x1), F3 (y0, y1).
+--     F3 (x0 y0 x1, y1) <- F4 (x0, x1), F1 (y0, y1).
+--     F3 (x0 y0, x1 y1) <- F10 (x0, x1), F7 (y0, y1).
+--     F3 (x0 y0, x1 y1) <- F3 (x0, x1), F9 (y0, y1).
+--     F3 (x0 y0, x1 y1) <- F4 (x0, x1), F8 (y0, y1).
+--     F3 (x0 y0, x1 y1) <- F1 (x0, x1), F3 (y0, y1).
+--     F3 (x0 `C`, x1 `A`) <- F1 (x0, x1).
+--     F3 (x0 `C`, `A` x1) <- F1 (x0, x1).
+--     F3 (x0, y0 x1 y1) <- F6 (x0, x1), F8 (y0, y1).
+--     F3 (x0, y0 x1 y1) <- F8 (x0, x1), F3 (y0, y1).
+--     F3 (x0, y0 x1 y1) <- F10 (x0, x1), F5 (y0, y1).
+--     F3 (x0, y0 x1 y1) <- F3 (x0, x1), F1 (y0, y1).
+--     F3 (x0, `C` x1 `A`) <- F8 (x0, x1).
+--     F3 (x0, `B` x1) <- F10 (x0, x1).
+--     F4 (`C` x0 `A`, x1) <- F13 (x0, x1).
+--     F4 (`C` x0, `A` x1) <- F13 (x0, x1).
+--     F4 (`B` x0, x1) <- F10 (x0, x1).
+--     F4 (`A` x0, x1 `C`) <- F1 (x0, x1).
+--     F4 (`A` x0, `C` x1) <- F12 (x0, x1).
+--     F4 (, x0 y0 x1 y1) <- F6 (x0, x1), F14 (y0, y1).
+--     F4 (, x0 y0 x1 y1) <- F8 (x0, x1), F15 (y0, y1).
+--     F4 (, x0 y0 x1 y1) <- F10 (x0, x1), F16 (y0, y1).
+--     F4 (, x0 y0 x1 y1) <- F3 (x0, x1), F13 (y0, y1).
+--     F4 (, x0 y0 x1 y1) <- F12 (x0, x1), F6 (y0, y1).
+--     F4 (, x0 y0 x1 y1) <- F5 (x0, x1), F10 (y0, y1).
+--     F4 (, x0 y0 x1 y1) <- F4 (x0, x1), F12 (y0, y1).
+--     F4 (, x0 y0 x1 y1) <- F1 (x0, x1), F4 (y0, y1).
+--     F4 (x0 y0 x1, y1) <- F8 (x0, x1), F15 (y0, y1).
+--     F4 (x0 y0 x1, y1) <- F3 (x0, x1), F13 (y0, y1).
+--     F4 (x0 y0 x1, y1) <- F5 (x0, x1), F10 (y0, y1).
+--     F4 (x0 y0 x1, y1) <- F1 (x0, x1), F4 (y0, y1).
+--     F4 (x0 y0, x1 y1) <- F10 (x0, x1), F16 (y0, y1).
+--     F4 (x0 y0, x1 y1) <- F3 (x0, x1), F13 (y0, y1).
+--     F4 (x0 y0, x1 y1) <- F4 (x0, x1), F12 (y0, y1).
+--     F4 (x0 y0, x1 y1) <- F1 (x0, x1), F4 (y0, y1).
+--     F4 (x0, `B` x1) <- F10 (x0, x1).
+--     F4 (x0 `A`, x1 `C`) <- F1 (x0, x1).
+--     F4 (x0 `A`, `C` x1) <- F12 (x0, x1).
+--     F4 (x0, y0 x1 y1) <- F12 (x0, x1), F6 (y0, y1).
+--     F4 (x0, y0 x1 y1) <- F5 (x0, x1), F10 (y0, y1).
+--     F4 (x0, y0 x1 y1) <- F4 (x0, x1), F12 (y0, y1).
+--     F4 (x0, y0 x1 y1) <- F1 (x0, x1), F4 (y0, y1).
+--     F4 (x0, `A` x1 `C`) <- F1 (x0, x1).
+--     F5 (`C` x0 `A`, x1) <- F11 (x0, x1).
+--     F5 (`C` x0, x1 `A`) <- F11 (x0, x1).
+--     F5 (`B` x0, x1) <- F8 (x0, x1).
+--     F5 (`B` x0, x1) <- F12 (x0, x1).
+--     F5 (`B` x0, x1) <- F1 (x0, x1).
+--     F5 (, x0 y0 x1 y1) <- F14 (x0, x1), F7 (y0, y1).
+--     F5 (, x0 y0 x1 y1) <- F7 (x0, x1), F9 (y0, y1).
+--     F5 (, x0 y0 x1 y1) <- F15 (x0, x1), F11 (y0, y1).
+--     F5 (, x0 y0 x1 y1) <- F9 (x0, x1), F2 (y0, y1).
+--     F5 (, x0 y0 x1 y1) <- F16 (x0, x1), F8 (y0, y1).
+--     F5 (, x0 y0 x1 y1) <- F11 (x0, x1), F3 (y0, y1).
+--     F5 (, x0 y0 x1 y1) <- F13 (x0, x1), F5 (y0, y1).
+--     F5 (, x0 y0 x1 y1) <- F2 (x0, x1), F1 (y0, y1).
+--     F5 (x0 y0 x1, y1) <- F8 (x0, x1), F7 (y0, y1).
+--     F5 (x0 y0 x1, y1) <- F3 (x0, x1), F11 (y0, y1).
+--     F5 (x0 y0 x1, y1) <- F5 (x0, x1), F8 (y0, y1).
+--     F5 (x0 y0 x1, y1) <- F1 (x0, x1), F5 (y0, y1).
+--     F5 (x0 y0, x1 y1) <- F6 (x0, x1), F11 (y0, y1).
+--     F5 (x0 y0, x1 y1) <- F8 (x0, x1), F2 (y0, y1).
+--     F5 (x0 y0, x1 y1) <- F12 (x0, x1), F5 (y0, y1).
+--     F5 (x0 y0, x1 y1) <- F5 (x0, x1), F1 (y0, y1).
+--     F5 (x0, x1 `B`) <- F8 (x0, x1).
+--     F5 (x0 `B`, x1) <- F12 (x0, x1).
+--     F5 (x0 `B`, x1) <- F1 (x0, x1).
+--     F5 (x0, y0 x1 y1) <- F12 (x0, x1), F7 (y0, y1).
+--     F5 (x0, y0 x1 y1) <- F5 (x0, x1), F9 (y0, y1).
+--     F5 (x0, y0 x1 y1) <- F4 (x0, x1), F11 (y0, y1).
+--     F5 (x0, y0 x1 y1) <- F1 (x0, x1), F2 (y0, y1).
+--     F5 (x0, x1 `B`) <- F1 (x0, x1).
+--     F6 (`B` x0, x1) <- F10 (x0, x1).
+--     F6 (`A` x0 `C`, x1) <- F12 (x0, x1).
+--     F6 (`A` x0, x1 `C`) <- F8 (x0, x1).
+--     F6 (x0 y0 x1 y1, ) <- F6 (x0, x1), F14 (y0, y1).
+--     F6 (x0 y0 x1 y1, ) <- F8 (x0, x1), F15 (y0, y1).
+--     F6 (x0 y0 x1 y1, ) <- F10 (x0, x1), F16 (y0, y1).
+--     F6 (x0 y0 x1 y1, ) <- F3 (x0, x1), F13 (y0, y1).
+--     F6 (x0 y0 x1 y1, ) <- F12 (x0, x1), F6 (y0, y1).
+--     F6 (x0 y0 x1 y1, ) <- F5 (x0, x1), F10 (y0, y1).
+--     F6 (x0 y0 x1 y1, ) <- F4 (x0, x1), F12 (y0, y1).
+--     F6 (x0 y0 x1 y1, ) <- F1 (x0, x1), F4 (y0, y1).
+--     F6 (x0 y0 x1, y1) <- F6 (x0, x1), F14 (y0, y1).
+--     F6 (x0 y0 x1, y1) <- F10 (x0, x1), F16 (y0, y1).
+--     F6 (x0 y0 x1, y1) <- F12 (x0, x1), F6 (y0, y1).
+--     F6 (x0 y0 x1, y1) <- F4 (x0, x1), F12 (y0, y1).
+--     F6 (x0 y0, x1 y1) <- F6 (x0, x1), F14 (y0, y1).
+--     F6 (x0 y0, x1 y1) <- F8 (x0, x1), F15 (y0, y1).
+--     F6 (x0 y0, x1 y1) <- F12 (x0, x1), F6 (y0, y1).
+--     F6 (x0 y0, x1 y1) <- F5 (x0, x1), F10 (y0, y1).
+--     F6 (x0, y0 x1 y1) <- F6 (x0, x1), F14 (y0, y1).
+--     F6 (x0, y0 x1 y1) <- F8 (x0, x1), F15 (y0, y1).
+--     F6 (x0, y0 x1 y1) <- F10 (x0, x1), F16 (y0, y1).
+--     F6 (x0, y0 x1 y1) <- F3 (x0, x1), F13 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F14 (x0, x1), F7 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F7 (x0, x1), F9 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F15 (x0, x1), F11 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F9 (x0, x1), F2 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F16 (x0, x1), F8 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F11 (x0, x1), F3 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F13 (x0, x1), F5 (y0, y1).
+--     F7 (, x0 y0 x1 y1) <- F2 (x0, x1), F1 (y0, y1).
+--     F7 (x0 y0 x1, y1) <- F14 (x0, x1), F7 (y0, y1).
+--     F7 (x0 y0 x1, y1) <- F15 (x0, x1), F11 (y0, y1).
+--     F7 (x0 y0 x1, y1) <- F16 (x0, x1), F8 (y0, y1).
+--     F7 (x0 y0 x1, y1) <- F13 (x0, x1), F5 (y0, y1).
+--     F7 (x0 y0, x1 y1) <- F14 (x0, x1), F7 (y0, y1).
+--     F7 (x0 y0, x1 y1) <- F7 (x0, x1), F9 (y0, y1).
+--     F7 (x0 y0, x1 y1) <- F16 (x0, x1), F8 (y0, y1).
+--     F7 (x0 y0, x1 y1) <- F11 (x0, x1), F3 (y0, y1).
+--     F7 (x0 `C`, x1 `A`) <- F11 (x0, x1).
+--     F7 (x0, y0 x1 y1) <- F14 (x0, x1), F7 (y0, y1).
+--     F7 (x0, y0 x1 y1) <- F7 (x0, x1), F9 (y0, y1).
+--     F7 (x0, y0 x1 y1) <- F15 (x0, x1), F11 (y0, y1).
+--     F7 (x0, y0 x1 y1) <- F9 (x0, x1), F2 (y0, y1).
+--     F7 (x0, x1 `B`) <- F9 (x0, x1).
+--     F7 (x0, x1 `B`) <- F8 (x0, x1).
+--     F8 (`C` x0, x1 `A`) <- F7 (x0, x1).
+--     F8 (`B` x0, x1) <- F6 (x0, x1).
+--     F8 (`B` x0, x1) <- F3 (x0, x1).
+--     F8 (`A` x0 `C`, x1) <- F5 (x0, x1).
+--     F8 (x0 y0 x1, y1) <- F6 (x0, x1), F7 (y0, y1).
+--     F8 (x0 y0 x1, y1) <- F10 (x0, x1), F11 (y0, y1).
+--     F8 (x0 y0 x1, y1) <- F12 (x0, x1), F8 (y0, y1).
+--     F8 (x0 y0 x1, y1) <- F4 (x0, x1), F5 (y0, y1).
+--     F8 (x0 y0, x1 y1) <- F6 (x0, x1), F7 (y0, y1).
+--     F8 (x0 y0, x1 y1) <- F8 (x0, x1), F9 (y0, y1).
+--     F8 (x0 y0, x1 y1) <- F12 (x0, x1), F8 (y0, y1).
+--     F8 (x0 y0, x1 y1) <- F5 (x0, x1), F3 (y0, y1).
+--     F8 (x0 `C`, x1 `A`) <- F5 (x0, x1).
+--     F8 (x0, y0 x1 y1) <- F6 (x0, x1), F7 (y0, y1).
+--     F8 (x0, y0 x1 y1) <- F8 (x0, x1), F9 (y0, y1).
+--     F8 (x0, y0 x1 y1) <- F10 (x0, x1), F11 (y0, y1).
+--     F8 (x0, y0 x1 y1) <- F3 (x0, x1), F2 (y0, y1).
+--     F8 (x0, x1 `B`) <- F3 (x0, x1).
+--     F9 (, x0 y0 x1 y1) <- F6 (x0, x1), F7 (y0, y1).
+--     F9 (, x0 y0 x1 y1) <- F8 (x0, x1), F9 (y0, y1).
+--     F9 (, x0 y0 x1 y1) <- F10 (x0, x1), F11 (y0, y1).
+--     F9 (, x0 y0 x1 y1) <- F3 (x0, x1), F2 (y0, y1).
+--     F9 (, x0 y0 x1 y1) <- F12 (x0, x1), F8 (y0, y1).
+--     F9 (, x0 y0 x1 y1) <- F5 (x0, x1), F3 (y0, y1).
+--     F9 (, x0 y0 x1 y1) <- F4 (x0, x1), F5 (y0, y1).
+--     F9 (, x0 y0 x1 y1) <- F1 (x0, x1), F1 (y0, y1).
+--     F9 (, ) <- .
+--     F9 (x0 y0 x1 y1, ) <- F14 (x0, x1), F14 (y0, y1).
+--     F9 (x0 y0 x1 y1, ) <- F7 (x0, x1), F15 (y0, y1).
+--     F9 (x0 y0 x1 y1, ) <- F15 (x0, x1), F16 (y0, y1).
+--     F9 (x0 y0 x1 y1, ) <- F9 (x0, x1), F13 (y0, y1).
+--     F9 (x0 y0 x1 y1, ) <- F16 (x0, x1), F6 (y0, y1).
+--     F9 (x0 y0 x1 y1, ) <- F11 (x0, x1), F10 (y0, y1).
+--     F9 (x0 y0 x1 y1, ) <- F13 (x0, x1), F12 (y0, y1).
+--     F9 (x0 y0 x1 y1, ) <- F2 (x0, x1), F4 (y0, y1).
+--     F9 (x0 y0 x1, y1) <- F14 (x0, x1), F9 (y0, y1).
+--     F9 (x0 y0 x1, y1) <- F15 (x0, x1), F2 (y0, y1).
+--     F9 (x0 y0 x1, y1) <- F16 (x0, x1), F3 (y0, y1).
+--     F9 (x0 y0 x1, y1) <- F13 (x0, x1), F1 (y0, y1).
+--     F9 (x0 y0, x1 y1) <- F15 (x0, x1), F7 (y0, y1).
+--     F9 (x0 y0, x1 y1) <- F9 (x0, x1), F9 (y0, y1).
+--     F9 (x0 y0, x1 y1) <- F13 (x0, x1), F8 (y0, y1).
+--     F9 (x0 y0, x1 y1) <- F2 (x0, x1), F3 (y0, y1).
+--     F9 (x0 `C`, x1 `A`) <- F2 (x0, x1).
+--     F9 (x0 `C`, `A` x1) <- F2 (x0, x1).
+--     F9 (x0, y0 x1 y1) <- F14 (x0, x1), F8 (y0, y1).
+--     F9 (x0, y0 x1 y1) <- F7 (x0, x1), F3 (y0, y1).
+--     F9 (x0, y0 x1 y1) <- F15 (x0, x1), F5 (y0, y1).
+--     F9 (x0, y0 x1 y1) <- F9 (x0, x1), F1 (y0, y1).
+--     F9 (x0, `C` x1 `A`) <- F7 (x0, x1).
+--     F9 (x0, `B` x1) <- F15 (x0, x1).
+--     F9 (x0, x1 `B`) <- F3 (x0, x1).
+--     F9 (x0, `B` x1) <- F3 (x0, x1).
+--     S (k0) <- F (k0).
+--   ],
+--   Starting Non-Terminal: S
+-- }
+exampleMIX3 :: IO (MultiCtxFreeGrammar NString NString NString)
 exampleMIX3 = do
   o2 <- mcfgToRtsa exampleO2
   o2 <- return $ runST $ numberExtRtsa (\_ _ _ _ -> return SpUnit) o2
   let preMIX  = extIntersectReg o2 pureABCLanguage
-      mix3Aut = extStringHomo preMIX mapper
+      mix3Aut = extStringHomo preMIX abcMapper
   ret <- rTSAToMultiCFG mix3Aut
-  ntRename <- renameNt $ mcfgStartNonTer ret
-  ret <- mapMCFG ntRename (return . NString . (:[])) return ret
-  case isValid ret of
+  ret <- mapMCFG return (return . (:[])) return ret
+  simpleRename ret >>= \case
     Left problem -> error problem
-    Right _ -> do
+    Right ret -> do
       putStrLn "Check Passed: Is Valid MCFG."
       return ret
+
+abcMapper :: String -> String
+abcMapper = \case
+  "a1" -> "A"
+  "a2" -> "B"
+  "oa1" -> "C"
+  "oa2" -> ""
+  _other -> error "IMPOSSIBLE."
+
+-- | A simple renaming process to provide better look
+simpleRename :: (Hashable nt, Num a, Show a, Eq a) =>
+  MultiCtxFreeGrammar nt String (Var a)
+  -> IO (Either String (MultiCtxFreeGrammar NString NString NString))
+simpleRename mcfg = do
+  ntRename <- renameNt $ mcfgStartNonTer mcfg
+  ret <- mapMCFG ntRename (return . NString) renameVar mcfg
+  return $ fmap (const ret) $ isValid ret
   where
     renameNt stNt = do
       getId <- ioAutoNumber
@@ -457,10 +901,43 @@ exampleMIX3 = do
           0 -> "S"
           1 -> "F"
           x -> "F" ++ show (x - 1)
-    mapper = \case
-      "a1" -> "A"
-      "a2" -> "B"
-      "oa1" -> "C"
-      "oa2" -> ""
-      _other -> error "IMPOSSIBLE."
+    renameVar (Var (ntId, vId)) = return . NString . (++ show vId) $ case ntId of
+      0 -> "k"
+      1 -> "x"
+      2 -> "y"
+      3 -> "z"
+      4 -> "a"
+      5 -> "b"
+      _ -> "v@" ++ quoteBy "()" (show ntId)
 
+-- -- | To test if the intersection truly works -- whether non-"oa1 oa2" pattern will be erased.
+-- --   Test Passed.
+-- -- >>> testIntersection
+-- -- MCFG {
+-- --   Rules: [
+-- --     F (`A` `B` `C`) <- .
+-- --     F (x0 x1) <- F1 (x0, x1).
+-- --     F1 (`A` `C`, `B`) <- .
+-- --     S (k0) <- F (k0).
+-- --   ],
+-- --   Starting Non-Terminal: S
+-- -- }
+-- testIntersection :: IO (MultiCtxFreeGrammar NString NString NString)
+-- testIntersection = do
+--   -- The example has three strings, where one of them has non-"oa1 oa2" pattern
+--   let exampleToTest :: MultiCtxFreeGrammar String String String = read $ unlines
+--         [ "S (a1 a2 oa1 oa2) <- ."
+--         , "S (x y) <- F (x, y)."
+--         , "F (oa1 a1, a2 oa2) <- ."
+--         , "F (a1 oa1, oa2 a2) <- ." ]
+--   er <- mcfgToRtsa exampleToTest
+--   er <- return $ runST $ numberExtRtsa (\_ _ _ _ -> return SpUnit) er
+--   let int = extIntersectReg er pureABCLanguage
+--       newInt = extStringHomo int abcMapper
+--   ret <- rTSAToMultiCFG newInt
+--   ret <- mapMCFG return (return . (:[])) return ret
+--   simpleRename ret >>= \case
+--     Left problem -> error problem
+--     Right ret -> do
+--       putStrLn "Check Passed: Is Valid MCFG."
+--       return ret
