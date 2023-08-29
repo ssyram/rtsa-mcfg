@@ -3,6 +3,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE InstanceSigs #-}
 module EqSysSimp (
   substConstant,
   removeSimpleEmptyVars,
@@ -41,7 +45,7 @@ import GHC.Generics (Generic)
 -- -- | Remove all the empty variables from the equation system
 -- --   Returns all the found zero variables (non-repeating) and the refined equation system
 -- removeZeroVars ::
---   (Eq v, Hashable v) =>
+--   (Eq v, Hashable v, Eq v) =>
 --   EqSys v acc -> ([v], EqSys v acc)
 -- removeZeroVars eqSys = runST $ do
 --   -- variables definitions
@@ -58,7 +62,7 @@ import GHC.Generics (Generic)
 --   return (zvLst, ret)
 
 
--- iterRound :: (Eq v, Hashable v) => HT.HashTable s (v) ()
+-- iterRound :: (Eq v, Hashable v, Eq v) => HT.HashTable s (v) ()
 --   -> STRef s Bool
 --   -> STRef s (EqSys v acc)
 --   -> ST s ()
@@ -125,7 +129,7 @@ They are expected to be handled by `removeRecurEmptyVar`.
 Returns all the found empty variables (non-repeating) and the refined equation system
 -}
 removeSimpleEmptyVars ::
-  (Hashable v, Show v, Show acc) => EqSys v acc -> ([v], EqSys v acc)
+  (Hashable v, Eq v, Show v, Show acc) => EqSys v acc -> ([v], EqSys v acc)
 removeSimpleEmptyVars eqSys = runST $ do
   zeroVars <- HT.new
 
@@ -139,7 +143,7 @@ removeSimpleEmptyVars eqSys = runST $ do
   zvLst <- fmap fst <$> HT.toList zeroVars
   return (zvLst, ret)
 
-filterRHS :: Hashable v => HT.HashTable s v ()
+filterRHS :: (Hashable v, Eq v) => HT.HashTable s v ()
   -> [SynComp v acc]
   -> ST s [SynComp v acc]
 filterRHS zeroVars lst = do
@@ -147,7 +151,9 @@ filterRHS zeroVars lst = do
   -- trace ("Zero Vars to Filter: " ++ show (quoteBy "[]" $ printLstContent zv)) $ return ()
   filterM (fmap not . hasEmptyVar zeroVars) lst
   where
-    hasEmptyVar :: (Hashable v) => HT.HashTable s v () -> SynComp v acc -> ST s Bool
+    hasEmptyVar ::
+      (Hashable v, Eq v) =>
+      HT.HashTable s v () -> SynComp v acc -> ST s Bool
     hasEmptyVar zeroVars (SynComp (_, lst)) = do
       anyM (finder zeroVars) lst
     finder zeroVars v = do
@@ -162,7 +168,9 @@ For example:
 In this case, the `removeSimpleEmptyVars` is not going to work because it just erases 
 the direct stuff.
 -}
-removeRecurEmptyVar :: (Hashable v, Show v, Show acc) =>EqSys v acc -> ([v], EqSys v acc)
+removeRecurEmptyVar ::
+  (Hashable v, Eq v, Show v, Show acc) =>
+  EqSys v acc -> ([v], EqSys v acc)
 removeRecurEmptyVar (EqSys oriLst) =
   fmap (sndMap $ fmap $ \(SynComp (_, vars)) -> SynComp (1 :: Int, vars)) oriLst
   |> EqSys
@@ -187,7 +195,7 @@ reachedTargetRound cRound targetRound _ = do
 -- | Combines `removeSimpleEmptyVars` and `removeRecurEmptyVars`
 --   Guaranteed to erase all the empty variables
 --   Returns the non-duplicating list of found empty variables and the refined EqSys
-removeEmptyVars :: (Hashable v, Show v, Show acc) => EqSys v acc -> ([v], EqSys v acc)
+removeEmptyVars :: (Hashable v, Eq v, Show v, Show acc) => EqSys v acc -> ([v], EqSys v acc)
 removeEmptyVars eqSys =
   let (emptyVars, newEqSys) = removeSimpleEmptyVars eqSys
       (moreEmptyVars, retEqSys) = removeRecurEmptyVar newEqSys
@@ -198,7 +206,7 @@ removeEmptyVars eqSys =
 --   Because the substitution will combine the accumulatives, so the position may not hold
 --   Returns the map of found constant variables and the equation system
 substConstant ::
-  (Ord v, Hashable v, Monoid acc, Show v, Show acc) =>
+  (Ord v, Hashable v, Eq v, Monoid acc, Show v, Show acc) =>
   EqSys v acc -> (M.Map v acc, EqSys v acc)
 substConstant eqSys = runST $ do
   constMap <- HT.new
@@ -218,7 +226,7 @@ isConst = List.all isConst
     isConst (SynComp (_, [])) = True
     isConst (SynComp (_, _l)) = False
 
-logConstVars :: (Monoid acc, Hashable v) =>
+logConstVars :: (Monoid acc, Hashable v, Eq v) =>
   HT.HashTable s v acc
   -> [(v, [SynComp v acc])] -> ST s ()
 logConstVars constMap lst = forM_ lst $ \(v, constRHS) ->
@@ -226,7 +234,7 @@ logConstVars constMap lst = forM_ lst $ \(v, constRHS) ->
   |> foldl (<>) mempty  -- MUST BE `foldl` NOT `foldr`
   |> HT.insert constMap v
 
-modifyRHS :: (Monoid acc, Hashable v) =>
+modifyRHS :: (Monoid acc, Hashable v, Eq v) =>
   HT.HashTable s v acc
   -> [SynComp v acc]
   -> ST s [SynComp v acc]
@@ -306,7 +314,7 @@ Examples:
 
 > x = xx
 -}
-removeDuplicatedVars :: (Num acc, Hashable v, Hashable acc, Ord v) =>
+removeDuplicatedVars :: (Num acc, Hashable v, Eq v, Hashable acc, Eq acc, Ord v) =>
   EqSys v acc -> EqSys v acc
 removeDuplicatedVars eqSys@(EqSys lst) = runST $ do
   -- First just collect the information of the union-find sets
@@ -344,7 +352,7 @@ removeDuplicatedVars eqSys@(EqSys lst) = runST $ do
 --   Provided the `normalise` function to normalise the whole equation system so that the RHS
 --   has a UNIQUE representation.
 --   The correctness of the function will be affected by the `normalise` function
-collectDuplicateInfo :: (Foldable t, Hashable a, Hashable k, Ord a) =>
+collectDuplicateInfo :: (Foldable t, Hashable a, Eq a, Hashable k, Eq k, Ord a) =>
   (EqSys a acc -> ST s (t (a, k)))
   -> EqSys a acc -> ST s (HT.HashTable s a (UF.Point s a))
 collectDuplicateInfo normalise eqSys@(EqSys lst) = do
@@ -365,6 +373,7 @@ collectDuplicateInfo normalise eqSys@(EqSys lst) = do
       odv <- UF.descriptor op
       dv  <- UF.descriptor p
       let (pMin, pMax) = if odv <= dv then (op, p) else (p, op)
+      -- By the doc of `union`, the descriptor is the right one
       pMax `UF.union` pMin
       return (Just p, ())
     

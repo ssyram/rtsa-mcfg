@@ -1,5 +1,6 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE Strict #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -75,6 +76,7 @@ instance (Show nt, Show v) => Show (LocVarDecl nt v) where
     , quoteBy "()" $ printLstContent vs ]
 
 -- | _ (t1, ..., tn) <- NT1 (v11, ..., v1n1), ..., NTm (vm1, ..., vmnm)
+--   `Rule` `nt` `t` `v`
 data Rule nt t v = Rule
   { lhs :: [Term t]
   , rhs :: [LocVarDecl nt v] }

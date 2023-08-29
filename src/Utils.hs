@@ -11,11 +11,12 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 module Utils where
 import Data.List (intercalate)
 import Control.Monad.State (StateT, MonadTrans (lift), evalStateT, forM_, foldM)
-import Control.Monad.ST.Strict (ST)
-import Control.Monad.Reader (ReaderT (runReaderT), when)
+import Control.Monad.ST.Strict (ST, runST)
+import Control.Monad.Reader (ReaderT (runReaderT), when, MonadReader)
 import qualified Data.HashTable.Class as HT
 import qualified Data.Map.Strict as M
 import qualified Data.HashTable.IO as HTO
@@ -24,13 +25,15 @@ import Data.Hashable ( Hashable )
 import Data.STRef.Strict (readSTRef, writeSTRef, STRef, newSTRef, modifySTRef')
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import Data.HashTable.IO (IOHashTable)
-import Control.Monad.Cont (MonadCont (callCC), MonadIO (liftIO))
+import Control.Monad.Cont (MonadCont (callCC), MonadIO (liftIO), ap)
 import Control.Monad.Trans.Cont (evalContT)
 import Control.Monad.Logic (LogicT(LogicT))
 import qualified Data.Set as S
 import GHC.Generics (Generic)
 import qualified Data.HashTable.ST.Basic as HTST
 import Control.Monad.Trans.Maybe (MaybeT(MaybeT))
+import Control.Monad.Reader.Class (MonadReader(..))
+import Control.Monad.Except (MonadError (..))
 
 printLstContent :: Show a => [a] -> String
 printLstContent lst = intercalate ", " $ fmap show lst
@@ -69,7 +72,7 @@ strdrDelimit genCtx locRdr = do
   ctx <- genCtx
   lift $ runReaderT locRdr ctx
 
-hashTableToMap :: (HT.HashTable h, Ord k, Hashable k) => IOHashTable h k a -> IO (M.Map k a)
+hashTableToMap :: (HT.HashTable h, Ord k, Hashable k, Eq k) => IOHashTable h k a -> IO (M.Map k a)
 hashTableToMap tab = do
   lst <- HTO.toList tab
   return $ M.fromList lst
@@ -86,11 +89,11 @@ printTheList lst = liftIO $ putStrLn $ unwords lst
 
 type HashSet k = HTO.BasicHashTable k ()
 
-setHas :: (Hashable k) =>HashSet k -> k -> IO Bool
+setHas :: ((Hashable k, Eq k)) =>HashSet k -> k -> IO Bool
 setHas set key = isJust <$> HTO.lookup set key
 
 -- | Returns whether the key is already presented
-setAdd :: (Hashable k) =>HashSet k -> k -> IO Bool
+setAdd :: ((Hashable k, Eq k)) =>HashSet k -> k -> IO Bool
 setAdd set key = HTO.mutate set key $ \case
    Nothing -> (Just (), True)
    Just _  -> (Just (), False)
@@ -117,7 +120,8 @@ whileM mb body = do
   b <- mb
   when b $ do body; whileM mb body
 
-mapToHashTable :: (HT.HashTable h, Hashable k) => M.Map k v -> IO (HTO.IOHashTable h k v)
+mapToHashTable :: (HT.HashTable h, Hashable k, Eq k) =>
+  M.Map k v -> IO (HTO.IOHashTable h k v)
 mapToHashTable map = HTO.fromList $ M.toList map
 
 class (Monad m) => Modifiable m r | m -> r where
@@ -128,6 +132,20 @@ class (Monad m) => Modifiable m r | m -> r where
   modifyRef ref f = do
     v <- readRef ref
     writeRef ref $ f v
+
+instance (MonadTrans t, Monad m, Modifiable m r, Monad (t m)) => Modifiable (t m) r where
+  newRef :: (MonadTrans t, Monad m, Modifiable m r, Monad (t m)) =>
+    a -> t m (r a)
+  newRef = lift . newRef
+  readRef :: (MonadTrans t, Monad m, Modifiable m r, Monad (t m)) =>
+    r a -> t m a
+  readRef = lift . readRef
+  writeRef :: (MonadTrans t, Monad m, Modifiable m r, Monad (t m)) =>
+    r a -> a -> t m ()
+  writeRef r a = lift $ writeRef r a
+  modifyRef :: (MonadTrans t, Monad m, Modifiable m r, Monad (t m)) =>
+    r a -> (a -> a) -> t m ()
+  modifyRef r f = lift $ modifyRef r f
 
 infixr 0 <<-
 -- | The infix synonym of `writeRef`
@@ -295,7 +313,7 @@ printListMap print map =
 
 -- | Generate a function that returns an auto-increasing function
 --   It recalls the time an object is called (this function is applied to)
-stAutoCallCount :: (Hashable k, Enum a) =>ST s (k -> ST s a)
+stAutoCallCount :: (Hashable k, Eq k, Enum a) =>ST s (k -> ST s a)
 stAutoCallCount = do
   tab <- HTST.new
   return $ \o ->
@@ -304,7 +322,7 @@ stAutoCallCount = do
       Just id -> (Just $ succ id, id)
 
 -- | The `IO` monad version of `stAutoCallCount`
-ioAutoCallCount :: (Hashable k, Enum a) =>IO (k -> IO a)
+ioAutoCallCount :: (Hashable k, Eq k, Enum a) =>IO (k -> IO a)
 ioAutoCallCount = do
   tab <- HTO.new :: IO (HTO.BasicHashTable k v)
   return $ \o ->
@@ -314,7 +332,7 @@ ioAutoCallCount = do
 
 -- | Returns an `ST` monad auto numbering function that can give a unique number to the input
 --   For a given fixed input, the number is the same
-stAutoNumber :: (Num a, Hashable k) => ST s (k -> ST s a)
+stAutoNumber :: (Num a, Hashable k, Eq k) => ST s (k -> ST s a)
 stAutoNumber = do
   cell <- newRef 0
   tab <- HTST.new
@@ -326,7 +344,7 @@ stAutoNumber = do
         cell <<- nextId + 1
         return (Just nextId, nextId)
 
-ioAutoNumber :: (Num a, Hashable k) => IO (k -> IO a)
+ioAutoNumber :: (Num a, Hashable k, Eq k) => IO (k -> IO a)
 ioAutoNumber = do
   cell <- newRef 0
   tab <- HTO.new :: IO (HTO.BasicHashTable k v)
@@ -341,3 +359,71 @@ ioAutoNumber = do
 -- | Make the `Maybe` type become a transformer within a monad
 transMaybe :: Monad m => Maybe a -> MaybeT m a
 transMaybe m = MaybeT $ return m
+
+-- | The monad to collect results
+newtype ColT r m a = ColT { runColT :: m (Either r a) }
+
+-- | The usual runner of the `ColT` monad
+collectResultT :: Monad m => ColT r m r -> m r
+collectResultT colT = do
+  either <- runColT colT
+  case either of
+    Left  e -> return e
+    Right e -> return e
+
+instance Monad m => Functor (ColT r m) where
+  fmap :: Functor m => (a -> b) -> ColT r m a -> ColT r m b
+  fmap f (ColT m) = ColT $ fmap (fmap f) m
+
+instance Monad m => Applicative (ColT r m) where
+  pure :: Monad m => a -> ColT r m a
+  pure a = ColT $ return $ return a
+  (<*>) :: Monad m => ColT r m (a -> b) -> ColT r m a -> ColT r m b
+  (<*>) = ap
+
+instance Monad m => Monad (ColT r m) where
+  (>>=) :: Monad m => ColT r m a -> (a -> ColT r m b) -> ColT r m b
+  (ColT m) >>= f = ColT $ do
+    either <- m
+    case either of
+      Left l  -> return $ Left l
+      Right r -> runColT $ f r
+
+instance MonadTrans (ColT r) where
+  lift :: Monad m => m a -> ColT r m a
+  lift m = ColT $ fmap return m
+
+class MonadCollect r m | m -> r where
+  -- | Collect the result and finish the computation
+  --   The computations after are all discarded
+  collect :: r -> m a
+
+instance Monad m => MonadCollect r (ColT r m) where
+  collect :: Monad m => r -> ColT r m a
+  collect r = ColT $ return $ Left r
+
+-- instance (MonadTrans t, Monad m, MonadCollect r m) => MonadCollect r (t m) where
+--   collect :: (MonadTrans t, Monad m, MonadCollect r m) => r -> t m a
+--   collect r = lift $ collect r
+
+-- >>> testColRes
+-- 1000
+testColRes :: Int
+testColRes = runST $ flip runReaderT 10 $ collectResultT $ do
+  cell <- newRef (0 :: Int)
+  whenM ((<= 1) <$> readRef cell) $ local (* 100) ask >>= collect
+  ask
+
+instance (MonadReader r m) => MonadReader r (ColT r' m) where
+  ask :: MonadReader r m => ColT r' m r
+  ask = lift ask
+  local :: MonadReader r m => (r -> r) -> ColT r' m a -> ColT r' m a
+  local f (ColT m) = ColT $ local f m
+
+instance (MonadError e m) => MonadError e (ColT r m) where
+  throwError :: MonadError e m => e -> ColT r m a
+  throwError = lift . throwError
+  catchError :: MonadError e m => ColT r m a -> (e -> ColT r m a) -> ColT r m a
+  catchError (ColT m) f = ColT $ catchError m $ runColT . f
+
+

@@ -2,6 +2,8 @@
 {-# HLINT ignore "Use <$>" #-}
 {-# LANGUAGE LambdaCase #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Examples (
   toNStringMCFG,
   exampleCOPY,
@@ -82,7 +84,8 @@ exampleRtsaCOPY :: IO
 exampleRtsaCOPY = mcfgToRtsa exampleCOPY
 
 numberRtsa ::
-  (Hashable q, Hashable m, Hashable g, Ord info, Ord (sp Int Int Int)) =>((q -> ST s Int)
+  (Hashable q, Eq q, Hashable m, Eq m, Hashable g, Eq g, Ord info, Ord (sp Int Int Int)) =>
+  ((q -> ST s Int)
     -> (m -> ST s Int)
     -> (g -> ST s Int)
     -> sp q m g
@@ -96,7 +99,7 @@ numberRtsa spMap rtsa = do
   mapAut qF mF gF return (spMap qF mF gF) rtsa
 
 numberExtRtsa ::
-  (Hashable q, Hashable m, Hashable g, Ord info, Ord (sp Int Int Int)) =>
+  (Hashable q, Eq q, Hashable m, Eq m, Hashable g, Eq g, Ord info, Ord (sp Int Int Int)) =>
   ((q -> ST s Int)
     -> (m -> ST s Int)
     -> (g -> ST s Int)
@@ -892,7 +895,7 @@ abcMapper = \case
   _other -> error "IMPOSSIBLE."
 
 -- | A simple renaming process to provide better look
-simpleRename :: (Hashable nt, Num a, Show a, Eq a) =>
+simpleRename :: (Hashable nt, Eq nt, Num a, Show a, Eq a) =>
   MultiCtxFreeGrammar nt String (Var a)
   -> IO (Either String (MultiCtxFreeGrammar NString NString NString))
 simpleRename mcfg = do
@@ -902,7 +905,7 @@ simpleRename mcfg = do
   where
     renameNt stNt = do
       getId <- ioAutoNumber
-      _ :: Int <- getId stNt
+      !_ :: Int <- getId stNt
       return $ \nt -> do
         id <- getId nt
         return $ NString $ case id of

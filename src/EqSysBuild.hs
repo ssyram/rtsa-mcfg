@@ -9,6 +9,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
@@ -200,10 +201,10 @@ type CtxState q m g sp acc =
 --   should satisfy when appear in the constraints
 class (Eq q
       , Ord g
-      , Hashable q
+      , Hashable q, Eq q
       , Eq m
-      , Hashable m
-      , Hashable g
+      , Hashable m, Eq m
+      , Hashable g, Eq g
       , Show q
       , Show m
       , Show g
@@ -215,10 +216,10 @@ class (Eq q
 
 instance (Eq q
       , Ord g
-      , Hashable q
+      , Hashable q, Eq q
       , Eq m
-      , Hashable m
-      , Hashable g
+      , Hashable m, Eq m
+      , Hashable g, Eq g
       , Show q
       , Show m
       , Show g
@@ -272,7 +273,7 @@ instance (Eq q
 
 -- --------------------------- Aux Functions ---------------------------
 
-recordVaccumVar :: (Eq q, Eq g, Hashable q, Hashable g) =>
+recordVaccumVar :: (Eq q, Eq g, Hashable q, Eq q, Hashable g, Eq g) =>
   AbsVar q g -> BuildState q m g sp acc ()
 recordVaccumVar var
   | isUp var  = return ()
@@ -280,7 +281,7 @@ recordVaccumVar var
     vacSet <- asksCtx vaccumTrips
     liftIO $ void $ setAdd vacSet var
 
-possibleDowns :: (Eq q, Eq g, Hashable q, Hashable g) =>
+possibleDowns :: (Eq q, Eq g, Hashable q, Eq q, Hashable g, Eq g) =>
   q -> g -> BuildState q m g sp acc [q]
 possibleDowns q g = do
   downs <- asksCtx downPredictMap
@@ -296,7 +297,7 @@ getUpRevD g = do
     Nothing  -> return (RevList [], 0)
     Just upD -> return upD
 
-notLoggedVaccumVar :: (Eq q, Eq g, Hashable q, Hashable g) =>
+notLoggedVaccumVar :: (Eq q, Eq g, Hashable q, Eq q, Hashable g, Eq g) =>
   AbsVar q g -> BuildState q m g sp acc Bool
 notLoggedVaccumVar var = do
   cache <- asksCtx cacheResults
@@ -307,14 +308,14 @@ notLoggedVaccumVar var = do
       vaccumTrips <- asksCtx vaccumTrips
       liftIO $ not <$> vaccumTrips `setHas` var
 
-notOverK :: (Hashable g, Eq g) => Int -> g -> BuildState q m g sp acc Bool
+notOverK :: (Hashable g, Eq g, Eq g) => Int -> g -> BuildState q m g sp acc Bool
 notOverK len g = do
   maybeGk <- asksCtx kMap >>= \map -> liftIO $ HT.lookup map g
   globalK <- asksCtx kNum
   let gk = fromMaybe globalK maybeGk
   return $ (len + 1) `div` 2 <= gk
 
-catchPossibleVaccumVar :: (Hashable q, Hashable g, Eq q, Eq g) =>
+catchPossibleVaccumVar :: (Hashable q, Eq q, Hashable g, Eq g, Eq q, Eq g) =>
   AbsVar q g
   -> Int
   -> BuildState q m g sp acc ()
@@ -459,7 +460,7 @@ copeUp uq nm tg = do
   tryUpThenDown uq nm tg
 
 
-okForSingularUpVar :: (Ord g, Eq q, Hashable q, Hashable g) =>
+okForSingularUpVar :: (Ord g, Eq q, Hashable q, Eq q, Hashable g, Eq g) =>
   UpNodeVar q g -> BuildState q m g sp acc Bool
 okForSingularUpVar tgVar@(UpNodeVar tgLen _ tg) = do
   foldM (\x y -> do y <- y; return $ x && y) True
@@ -566,13 +567,13 @@ buildVarAndDependentVars var = asks buildMode >>= \case
   --   Just res -> return res
   --   Nothing  -> goToBuildVar var
 
-findCache :: (Eq q, Eq g, Hashable q, Hashable g) =>
+findCache :: (Eq q, Eq g, Hashable q, Eq q, Hashable g, Eq g) =>
   AbsVar q g -> CtxState q m g sp acc (Maybe BuildResult)
 findCache var = do
   cache <- asks cacheResults
   liftIO $ HT.lookup cache var
 
-bfsBuildVar :: (Eq q, Eq g, Hashable q, Hashable g) => AbsVar q g
+bfsBuildVar :: (Eq q, Eq g, Hashable q, Eq q, Hashable g, Eq g) => AbsVar q g
   -> Queue (AbsVar q g)
   -> CtxState q m g sp acc BuildResult
 bfsBuildVar var todoQueue = findCache var >>= \case
@@ -582,7 +583,7 @@ bfsBuildVar var todoQueue = findCache var >>= \case
     liftIO $ Q.enqueue todoQueue var
     return BRBfsInQueue
 
-reTravBuildVar :: (Eq q, Hashable q, Hashable g, Ord g, Show q, Show m, Show g) =>
+reTravBuildVar :: (Eq q, Hashable q, Eq q, Hashable g, Eq g, Ord g, Show q, Show m, Show g) =>
   AbsVar q g
   -> HT.BasicHashTable (AbsVar q g) ()
   -> Queue (AbsVar q g)
@@ -665,7 +666,7 @@ dfsBuildVar var pathSet envStk = evalContT $ callCC $ \resultIn -> do
 
 
 
-addToCache :: (Eq q, Eq g, Hashable q, Hashable g) =>
+addToCache :: (Eq q, Eq g, Hashable q, Eq q, Hashable g, Eq g) =>
   AbsVar q g -> BuildResult -> CtxState q m g sp acc ()
 addToCache var res = do
   cache <- asks cacheResults
@@ -760,7 +761,7 @@ initBfsBuildVar var todo =
     return varRes
 
 
-buildWithTodo :: (Hashable g, Hashable q, Ord g, Eq q) =>
+buildWithTodo :: (Hashable g, Eq g, Hashable q, Eq q, Ord g, Eq q) =>
   AbsVar q g
   -> Queue (AbsVar q g)
   -> (AbsVar q g -> CtxState q m g sp acc BuildResult)

@@ -11,6 +11,7 @@
 {-# LANGUAGE MonoLocalBinds #-}
 {-# OPTIONS_GHC -Wno-deriving-defaults #-}
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
+{-# LANGUAGE TupleSections #-}
 module EqSysBuild.MultiCFG (
   NonTer,
   Var(..),
@@ -36,7 +37,7 @@ import qualified Data.UnionFind.ST as UF
 import Control.Monad.ST.Class (MonadST(liftST), World)
 
 
--- ------------------------------ Concepts Definition ------------------------------
+-- --------------------------------- Concepts Definition ---------------------------------
 
 
 type NonTer q g = AbsVar q g
@@ -116,7 +117,7 @@ Procedure:
 - Convert the equation system to the MCFG.
 -}
 rTSAToMultiCFG ::
-  (StdReq q m g sp (AccInfo t g), Ord q, Ord m, Ord (sp q m g), Ord t, Hashable t) =>
+  (StdReq q m g sp (AccInfo t g), Ord q, Ord m, Ord (sp q m g), Ord t, Hashable t, Eq t) =>
   ExtendedRTSA q m g [t] sp
   -> IO (MultiCtxFreeGrammar (NonTer q g) t (Var g))
 rTSAToMultiCFG eRtsa = do
@@ -133,6 +134,7 @@ rTSAToMultiCFG eRtsa = do
   -- eqSys <- return $ replaceDupRules eqSys
   return $ eqSysToMultiCFG x0 eqSys
 
+
 -- replaceDupRules eqSys@(EqSys lst) = runST $ do
 --   varTab <- collectDuplicateInfo nonNumNormalise eqSys
 --   EqSys <$> replaceRules varTab lst
@@ -142,6 +144,7 @@ rTSAToMultiCFG eRtsa = do
 --   ~(Just p) <- liftST $ HT.lookup varTab v
 --   dv <- liftST $ UF.descriptor p
 --   guard $ v == dv
+--   -- TODO: define `replaceComp`
 --   comps <- liftST $ mapM (replaceComp varTab) comps
 --   return (v, comps)
 
@@ -183,7 +186,7 @@ Is converted to:
 > x (acc_i) <- x_i1 ... x_ij
 -}
 eqSysToMultiCFG ::
-  (Ord g, Ord q, Hashable g, Hashable q, Hashable t, Ord t) =>
+  (Ord g, Ord q, Hashable g, Eq g, Hashable q, Eq q, Hashable t, Eq t, Ord t) =>
   AbsVar q g
   -> EqSys (AbsVar q g) (AccInfo t g)
   -> MultiCtxFreeGrammar (NonTer q g) t (Var g)
@@ -192,15 +195,11 @@ eqSysToMultiCFG x0 eqSys =
   |> toColMap
   |> flip MultiCtxFreeGrammar x0
 
-getDesV :: (MonadST m, Hashable k) =>
-  HashTable (World m) k (UF.Point (World m) b) -> k -> m b
-getDesV varEqTab v = do
-  ~(Just p) <- liftST $ HT.lookup varEqTab v
-  liftST $ UF.descriptor p
+
 
 -- | Convert the equation system to a list of MCFG rules
 genMultiCFGRuleList ::
-  (Hashable g, Hashable q, Hashable t, Ord q, Ord g, Ord t) =>
+  (Hashable g, Eq g, Hashable q, Eq q, Hashable t, Eq t, Ord q, Ord g, Ord t) =>
   EqSys (AbsVar q g) (AccInfo t g)
   -> [(NonTer q g, Rule (NonTer q g) t (Var g))]
 genMultiCFGRuleList eqSys@(EqSys lst) = runST $ observeAllT $ do
@@ -213,27 +212,19 @@ genMultiCFGRuleList eqSys@(EqSys lst) = runST $ observeAllT $ do
 
   -- Do the core job
   comp <- toLogicT comps
-  (body, rhs) <- liftST $ computeRuleContent varEqTab comp
+  rule <- liftST $ computeRule varEqTab comp
 
-  -- let body = revDoubleRevList acc
-  --            |> retagList
-  --            |> fmap Term
-  --     rhs  =
-  --       [
-  --         LocVarDecl (v, [ Var (g, idx) | idx <- [0..(len - 1) `div` 2] ])
-  --         |
-  --         v@(AbsVar len _ ~(GNorm g)) <- vars
-  --       ]
-
-  return (v, Rule body rhs)
+  return (v, rule)
 
 
-computeRuleContent ::
-  (Hashable g, Hashable q) =>
+-- | Compute the Rule content, given a variable table, and the `SynComp`
+--   Returns the rule
+computeRule ::
+  (Hashable g, Eq g, Hashable q, Eq q) =>
   HashTable s (AbsVar q g) (UF.Point s (AbsVar q g))
   -> SynComp (AbsVar q g) (DRevList (InSym t g))
-  -> ST s ([Term t], [LocVarDecl (AbsVar q g) (Var g)])
-computeRuleContent varEqTab (SynComp (acc, vars)) = do
+  -> ST s (Rule (AbsVar q g) t (Var g))
+computeRule varEqTab (SynComp (acc, vars)) = do
   let accLst = revDoubleRevList acc
   -- The map for `g` idx to be appear in `accLst`, correspond to the RHS id
   getGId <- stAutoNumber
@@ -245,6 +236,7 @@ computeRuleContent varEqTab (SynComp (acc, vars)) = do
     dv@(AbsVar len _ _) <- getDesV varEqTab v
     return $ LocVarDecl (dv, [ Var (g, vId) | vId <- [0..(len - 1) `div` 2] ])
 
+  -- During converting the body, use the `g` information is enough for vars
   body <- forM accLst $ mapM $ \case
     ISTer t -> return $ STerminal t
     ISVar g -> do
@@ -252,4 +244,13 @@ computeRuleContent varEqTab (SynComp (acc, vars)) = do
       vId  <- getNextId g  -- Get the next id as the vId for it
       return $ SVar (ntId, vId)
   
-  return (Term <$> body, rhs)
+  -- Return
+  return $ Rule (Term <$> body) rhs
+
+
+getDesV :: (MonadST m, Hashable k, Eq k) =>
+  HashTable (World m) k (UF.Point (World m) b) -> k -> m b
+getDesV varEqTab v = do
+  ~(Just p) <- liftST $ HT.lookup varEqTab v
+  liftST $ UF.descriptor p
+

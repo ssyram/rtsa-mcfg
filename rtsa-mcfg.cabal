@@ -27,6 +27,7 @@ library
   exposed-modules:
       AutOp
       DirectGrammarOp
+      EnumStr
       EqSysBuild
       EqSysBuild.ExpTerTime
       EqSysBuild.MultiCFG

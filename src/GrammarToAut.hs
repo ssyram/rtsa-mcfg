@@ -159,7 +159,7 @@ So, for the dimension `n` of `Rule` of `NT` with index `i`, the translation is g
 So the procedure goes by traversing `tn`, during the stuff, at each step, modify the environment.
 -}
 convertRules ::
-  (Hashable nt) =>HashTable (State nt, StackSym nt) [State nt]
+  (Hashable nt, Eq nt) =>HashTable (State nt, StackSym nt) [State nt]
   -> [(nt, (Int, [Rule nt t v]))]
   -> IO [((State nt, LocMem nt t v, StackSym nt), ([t], Op nt t v))]
 convertRules downMap lst = L.observeAllT $ do
@@ -215,7 +215,7 @@ convertRules downMap lst = L.observeAllT $ do
   foldToLogicT lst
 
 
-retagRHS :: (Hashable nt) =>Rule nt t v -> IO (Rule (StackSym nt) t v)
+retagRHS :: (Hashable nt, Eq nt) =>Rule nt t v -> IO (Rule (StackSym nt) t v)
 retagRHS (Rule terms rhs) = do
   ntIdxMap <- HT.new :: IO (HashTable k v)
   rhs <- forM rhs $ \(LocVarDecl (nt, vars)) -> do

@@ -1,5 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE InstanceSigs #-}
 module Test where
 import EqSysBuild
 import Control.Monad.Identity (Identity(..))

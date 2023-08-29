@@ -1,6 +1,8 @@
 {-# LANGUAGE Strict #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE FlexibleContexts #-}
 module AutOp (FiniteStateAut(..), ReadFSA, GenFSA, Transducer, intersectReg, stringHomo, extIntersectReg, extStringHomo) where
 import Objects
 import qualified Data.Map as M
