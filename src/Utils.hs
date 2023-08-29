@@ -427,3 +427,65 @@ instance (MonadError e m) => MonadError e (ColT r m) where
   catchError (ColT m) f = ColT $ catchError m $ runColT . f
 
 
+-- ---------------------------- Enumerate ----------------------------
+
+{- Enumeration Implementation Template
+
+let private getExactN k =
+    // the guessN should be the case, but the sqrt computation may lead to some bias
+    let guessN =
+        // (n + 1) * n / 2 <= k < (n + 2) * (n + 1) / 2
+        // get sqrt(2 * k + 1/4) - 3/2 < n <= sqrt(2 * k + 1/4) - 1/2
+        // so just get the floor int of (sqrt(2 * k + 1/4) - 1/2)
+        int $ sqrt (2.0 * float k + 0.25) - 1.0 / 2.0 in
+    let rec smaller n =
+        if (n + 1) * n / 2 > k then smaller (n - 1) else n in
+    let rec bigger n =
+        if (n + 2) * (n + 1) / 2 <= k then bigger (n + 1) else n in
+    smaller $ bigger guessN
+/// enumerate the 2D index
+let getTwoD k =
+    // there may be some kind of accuracy difference like n + 1 or n - 1
+    let n = getExactN k in
+    let dif = k - (n + 1) * n / 2 in
+    (n - dif, dif)
+let rec getMultipleDimensions dim k =
+    if dim <= 0 then []
+    elif dim = 1 then [ k ]
+    else let this, that = getTwoD k in
+          this :: getMultipleDimensions (dim - 1) that
+-}
+
+-- | Given an index `k` when enumerating the whole 2D space natural number points
+--   Returns the point to be enumerated
+-- >>> take 10 $ fmap (\i -> (i, enumTwoDim i)) [0..]
+-- [ (0, (0, 0))
+-- , (1, (1, 0))
+-- , (2, (0, 1))
+-- , (3, (2, 0))
+-- , (4, (1, 1))
+-- , (5, (0, 2))
+-- , (6, (3, 0))
+-- , (7, (2, 1))
+-- , (8, (1, 2))
+-- , (9, (0, 3)) ]
+enumTwoDim :: Integral b => b -> (b, b)
+enumTwoDim k =
+  let n = getExactN k
+      dif = k - (n + 1) * n `div` 2
+  in
+  (n - dif, dif)
+  where
+    guessN k = floor (sqrt (2 * fromIntegral k + 0.25) - 0.5 :: Double)
+    getExactN k = smaller k $ bigger k $ guessN k
+    smaller k n = if (n + 1) * n `div` 2 > k then smaller k (n - 1) else n
+    bigger k n = if (n + 2) * (n + 1) `div` 2 <= k then bigger k (n + 1) else n
+
+-- | Enumerate multiple dimensions
+enumMultipleDims :: (Integral k, Num dim, Ord dim) => dim -> k -> [k]
+enumMultipleDims dim k
+  | dim <= 0  = []
+  | dim == 1  = [ k ]
+  | otherwise =
+    let (this, that) = enumTwoDim k in
+    this : enumMultipleDims (dim - 1) that

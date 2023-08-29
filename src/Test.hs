@@ -4,12 +4,17 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 module Test where
 import EqSysBuild
 import Control.Monad.Identity (Identity(..))
 import EqSysSimp
 import Data.Hashable (Hashable)
 import GHC.Generics (Generic)
+import Objects (MultiCtxFreeGrammar)
+import Examples (exampleCOPY, toNStringMCFG)
+import Utils
+import EnumStr
 
 
 newtype PInt = PInt Int
@@ -49,7 +54,7 @@ instance ToSynComps (SynComp v acc) where
   type Acc (SynComp v acc) = acc
   toSynComps :: SynComp v acc -> [SynComp v acc]
   toSynComps = (:[])
-  
+
 instance ToSynComps [SynComp v acc] where
   type V [SynComp v acc] = v
   type Acc [SynComp v acc] = acc
@@ -101,4 +106,34 @@ exampleTestRmDup = EqSys
   [ 'a' =. 1 *. "ab"
   , 'b' =. 1 *. "ab" ]
 
+newtype EnumRes t = EnumRes [(Int, Either NoStrError [t])]
 
+instance Show t => Show (EnumRes t) where
+  show :: Show t => EnumRes t -> String
+  show (EnumRes lst) =
+    lst
+    |> fmap (\ (idx, res) ->
+        show idx ++ " : " ++
+        case res of
+          Left _ -> "No String."
+          Right nss -> unwords $ fmap show nss)
+    |> unlines
+
+-- -- >>> testEnumExample (toNStringMCFG exampleCOPY) [0..10]
+-- -- 0 : 
+-- -- 1 : a a
+-- -- 2 : b b
+-- -- 3 : a a a a
+-- -- 4 : b a b a
+-- -- 5 : a b a b
+-- -- 6 : b b b b
+-- -- 7 : a a a a a a
+-- -- 8 : b a a b a a
+-- -- 9 : a b a a b a
+-- -- 10 : b b a b b a
+-- testEnumExample :: (Ord nt, Show nt, Show t, Show v) =>
+--   MultiCtxFreeGrammar nt t v -> [Int] -> EnumRes t
+-- testEnumExample example query =
+--   enumStrings example query
+--   |> zip query
+--   |> EnumRes
