@@ -31,6 +31,7 @@ module EqSysBuild (
   EqSys(..),
   StdReq,
   x0Of,
+  StdSpOp(..),
   runConstruction,
   constructEqSysFromX0,
   consBreathFsMode,
@@ -57,6 +58,35 @@ import qualified MData.Stack as S
 import qualified Data.Set as Set
 import Data.Either (isLeft)
 import Data.List (intercalate)
+
+
+{-
+  This file defines a general method of building an equation system of an rPTSA.
+  To build such an rPTSA, one will require to satisfy `StdReq q m g sp acc`, which is the synonym of:
+
+  -- Basic requirements
+  ( Eq q
+  , Ord g
+  , Hashable q, Eq q
+  , Eq m
+  , Hashable m, Eq m
+  , Hashable g, Eq g
+  , Show q
+  , Show m
+  , Show g
+  , Show acc
+  , Show (sp q m g)
+
+  -- TO DEFINE FOR EACH CUSTOMISATION
+  , SpOp sp
+  , AccStepInfo acc g )
+  
+  Besides the basic requirements for `q`, `m`, `g`, `sp`.
+  One will additionally require `SpOp sp` and `AccStepInfo acc g`.
+  The former requires the special operator to be able to map to standard operators with defined semantics in terms of the equation system generation process.
+  The `AccStepInfo acc g` requires the accumulative information to be monoid that can additionally be operated with `Down` and `Up g` element.
+-}
+
 
 type Queue = Q.IOLoopQueue
 type Stack = S.IODefStack
@@ -215,18 +245,18 @@ class (Eq q
   StdReq q m g sp acc
 
 instance (Eq q
-      , Ord g
-      , Hashable q, Eq q
-      , Eq m
-      , Hashable m, Eq m
-      , Hashable g, Eq g
-      , Show q
-      , Show m
-      , Show g
-      , Show acc
-      , SpOp sp
-      , Show (sp q m g)
-      , AccStepInfo acc g) =>
+         , Ord g
+         , Hashable q, Eq q
+         , Eq m
+         , Hashable m, Eq m
+         , Hashable g, Eq g
+         , Show q
+         , Show m
+         , Show g
+         , Show acc
+         , SpOp sp
+         , Show (sp q m g)
+         , AccStepInfo acc g) =>
   StdReq q m g sp acc
 
 -- -- | This is to test that from a generator function
@@ -333,22 +363,45 @@ logDepth = do
   liftIO $ print (BMsgDepth depth :: BuildMessage Int Int Int)
 
 class SpOp sp where
-  copeSp :: (StdReq q m g sp acc) => sp q m g -> BuildState q m g sp acc ()
+  toStdSpOp :: sp q m g -> StdSpOp q m g
 
 -- Some Standard Separate Special Operators
 
+-- | The set of standard special operators whose behavior (semantics) of generating the equation system
+--   are supported -- add to this part for more standard operator
+data StdSpOp q m g
+  = StdSpTer
+  | StdSpUnit
+  | StdSpHor q
+
+copeSp :: StdReq q m g sp acc => sp q m g -> BuildState q m g sp acc ()
+copeSp sp = copeStdSp $ toStdSpOp sp
+
+copeStdSp :: StdReq q m g sp acc => StdSpOp q m g -> BuildState q m g sp acc ()
+copeStdSp StdSpTer = copeSpTer
+copeStdSp StdSpUnit = copeSpUnit
+copeStdSp (StdSpHor q) = copeSpHor q
+
+copeSpUnit :: Monad m => m ()
+copeSpUnit = return ()
+
+copeSpTer :: StdReq q m g sp acc => BuildState q m g sp acc ()
+copeSpTer = whenM (asks $ null . curD) $ dispatchUpwardCompute Nothing
+
+copeSpHor :: StdReq q m g sp acc => q -> BuildState q m g sp acc ()
+copeSpHor q' = flip local traverseAndBuild $ \info -> info { curState = q' }
+
 instance SpOp SpUnit where
-  copeSp :: StdReq q m g SpUnit acc => SpUnit q m g -> BuildState q m g SpUnit acc ()
-  copeSp _ = return ()
+  toStdSpOp :: SpUnit q m g -> StdSpOp q m g
+  toStdSpOp _ = StdSpUnit
 
 instance SpOp SpTer where
-  copeSp :: StdReq q m g SpTer acc => SpTer q m g -> BuildState q m g SpTer acc ()
-  copeSp _ = whenM (asks $ null . curD) $ dispatchUpwardCompute Nothing
+  toStdSpOp :: SpTer q m g -> StdSpOp q m g
+  toStdSpOp _ = StdSpTer
 
 instance SpOp SpHorizontal where
-  copeSp :: StdReq q m g SpHorizontal acc =>
-    SpHorizontal q m g -> BuildState q m g SpHorizontal acc ()
-  copeSp (SpHor q') = flip local traverseAndBuild $ \info -> info { curState = q' }
+  toStdSpOp :: SpHorizontal q m g -> StdSpOp q m g
+  toStdSpOp (SpHor q) = StdSpHor q
 
 
 -- --------------------------- The Building Functions ---------------------------
@@ -512,6 +565,7 @@ tryUpThenDown uq nm tg = do
     notLoggedVaccumVar <- notLoggedVaccumVar tgVar
     when (notLoggedVaccumVar && notOverK) $ do
 
+      -- log the stuff
       liftIO $ putStrLn $ unwords
         [ "Try to go to direction:"
         , show tg ++ "."
@@ -911,7 +965,8 @@ instance (Show v, Show acc) => Show (EqSys v acc) where
 internalSynCompToSynComp :: InSynComp q g acc -> SynComp (AbsVar q g) acc
 internalSynCompToSynComp (InSynComp acc vars) = SynComp (acc, vars)
 
-runConstruction :: (SpOp sp, StdReq q m g sp acc) =>
+runConstruction ::
+  (SpOp sp, StdReq q m g sp acc) =>
   BuildContext q m g sp acc
   -> AbsVar q g
   -> IO (EqSys (AbsVar q g) acc)
